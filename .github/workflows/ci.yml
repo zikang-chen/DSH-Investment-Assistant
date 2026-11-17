@@ -60,6 +60,9 @@ jobs:
       - name: Dossier global sections
         run: npm run test:dossier-global
 
+      - name: Global index quotes
+        run: npm run test:global-indices
+
       # 离线、确定性的套件；依赖外部数据源或 POSIX 文件权限的套件不在此跑。
       - name: Policy
         run: npm run test:policy

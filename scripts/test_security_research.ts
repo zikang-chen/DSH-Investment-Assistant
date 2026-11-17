@@ -125,4 +125,13 @@ test('shell renders stable identity helpers and truthful K-line states', () => {
   assert.match(entry, /本地历史读取失败：\$\{histError\}/)
   assert.match(entry, /if \(id === 'dossier' && tab !== 'dossier'\) setSecurityReturnTab\(tab\)/)
 })
+test('double-click opens K-line and dossier while single click stays explicit', () => {
+  assert.match(entry, /onDoubleClick: doubleClick/)
+  assert.match(entry, /requestSecurityOpen\(\{ code: q\.code, name: q\.name, type: q\.type \?\? 'stock' \}\)/)
+  assert.match(entry, /onDoubleClick: \(\) => rowDouble\(/)
+  assert.match(entry, /requestSecurityOpen\(\{ code: hd\.code, name: q\?\.name \|\| hd\.name, type: hd\.type \}\)/)
+  assert.match(entry, /const GLOBAL_REGIONS/)
+  assert.match(entry, /useState\('us'\)/)
+  assert.match(entry, /\/global-indices\?region=/)
+})
 console.log(`[security-research] ${passed} pure/static groups passed; browser and live-provider coverage are separate.`)

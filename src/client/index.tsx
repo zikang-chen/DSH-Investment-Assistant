@@ -469,6 +469,18 @@ const TIGHT_W = 460
 
 function QuoteRow(props: { q: LiveQuote; loading?: boolean; onRemove?: () => void; onClick?: () => void; onAnalyze?: () => void }) {
   const q = props.q
+  // 单击与双击互斥：双击直接打开 K 线 + 详细资料，单击保留原来的定位/分析行为。
+  const clickTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => { if (clickTimer.current) window.clearTimeout(clickTimer.current) }, [])
+  const singleClick = () => {
+    if (!props.onClick) return
+    if (clickTimer.current) window.clearTimeout(clickTimer.current)
+    clickTimer.current = window.setTimeout(() => { clickTimer.current = undefined; props.onClick?.() }, 220)
+  }
+  const doubleClick = () => {
+    if (clickTimer.current) { window.clearTimeout(clickTimer.current); clickTimer.current = undefined }
+    requestSecurityOpen({ code: q.code, name: q.name, type: q.type ?? 'stock' })
+  }
   const tight = usePanelWidth() < TIGHT_W
   const pct = q.changePercent
   const sparkColor = q.spark && q.spark.length >= 2 ? (q.spark[q.spark.length - 1]! >= q.spark[0]! ? UP : DOWN) : colorOf(pct)
@@ -492,9 +504,11 @@ function QuoteRow(props: { q: LiveQuote; loading?: boolean; onRemove?: () => voi
       borderRadius: 8,
       flexWrap: 'wrap',
       borderLeft: `3px solid ${hasPrice ? colorOf(pct) : V('--dsw-alias-border-l2', '#e5e5e5')}`,
-      cursor: props.onClick ? 'pointer' : 'default',
+      cursor: 'pointer',
     },
-    onClick: props.onClick,
+    onClick: singleClick,
+    onDoubleClick: doubleClick,
+    title: '单击定位/分析，双击打开 K 线与详细资料',
   },
     h('div', { style: { flex: 1, minWidth: 0 } },
       props.loading && !q.name
@@ -1130,6 +1144,60 @@ function SearchAdd(props: { onAdd: (code: string, type: AssetType) => void }) {
 }
 
 // ---- 行情 tab ----
+/** 全球主要指数：默认美国，可切换亚太/欧洲/中国；接口返回 null 时显示 —，不补 0。 */
+const GLOBAL_REGIONS: Array<{ id: string; label: string }> = [
+  { id: 'us', label: '美国' }, { id: 'asia', label: '亚太' }, { id: 'europe', label: '欧洲' }, { id: 'china', label: '中国' },
+]
+interface GlobalIndexRow { secid: string; name: string; region?: string; price?: number | null; changePct?: number | null; change?: number | null; asOf?: string; source?: string }
+function GlobalIndicesPanel() {
+  const [region, setRegion] = useState('us')
+  const [rows, setRows] = useState<GlobalIndexRow[]>([])
+  const [at, setAt] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const load = useCallback(async (target: string) => {
+    setLoading(true); setError('')
+    try {
+      const r = await apiGet<{ ok?: boolean; at?: string; rows?: GlobalIndexRow[]; error?: string }>(`/global-indices?region=${encodeURIComponent(target)}`)
+      if (r.ok === false) throw new Error(r.error || '全球行情读取失败')
+      setRows(r.rows ?? []); setAt(r.at ?? '')
+    } catch (err) { setError(errText(err)) } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { void load(region) }, [region, load])
+  return h('div', { style: S.group },
+    h('div', { style: S.groupHead },
+      h('div', { style: { ...S.title, marginBottom: 0 } }, '全球行情'),
+      h('span', { style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, loading ? '加载中…' : at ? `抓取 ${at.slice(0, 16).replace('T', ' ')}` : '未读取'),
+      h('button', { style: { ...S.btn, padding: '2px 8px' }, onClick: () => void load(region), disabled: loading }, loading ? '…' : '刷新')),
+    h('div', { style: { padding: 9, display: 'flex', flexDirection: 'column', gap: 8 } },
+      h('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap' } },
+        GLOBAL_REGIONS.map(item => h('button', {
+          key: item.id, type: 'button', onClick: () => setRegion(item.id),
+          'aria-pressed': region === item.id,
+          style: { ...S.btn, padding: '3px 10px', borderRadius: 999, border: `1px solid ${region === item.id ? BRAND : R.line}`, background: region === item.id ? BRAND_SOFT : S.btn.background, color: region === item.id ? BRAND : S.btn.color, fontWeight: region === item.id ? 600 : 400 },
+        }, item.label))),
+      error
+        ? h('div', { role: 'alert', style: { ...S.muted, color: DANGER, fontSize: 12, lineHeight: 1.7 } }, `全球行情读取失败：${error}。可重试；不会用旧数据冒充最新。`)
+        : loading && rows.length === 0
+          ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 6 } }, [0, 1, 2].map(i => h(Skeleton, { key: i, w: '100%', h: 58 })))
+          : rows.length === 0
+            ? h(EmptyState, { icon: h(IconChart, { size: 20 }), text: '暂无全球指数数据，点刷新重试。' })
+            : h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 6 } },
+              rows.map(row => {
+                const pct = typeof row.changePct === 'number' ? row.changePct : undefined
+                const color = colorOf(pct)
+                return h('div', { key: row.secid, style: { ...S.card, gap: 3, padding: '8px 10px', minWidth: 0 } },
+                  h('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline', minWidth: 0 } },
+                    h('span', { style: { fontWeight: 600, fontSize: 11.5, flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: row.name }, row.name),
+                    pct === undefined ? null : h('span', { style: { color, fontWeight: 600, fontSize: 11.5, fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' } }, `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`)),
+                  h('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 } },
+                    h('span', { style: { fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, typeof row.price === 'number' ? formatNumber(row.price, { decimals: 2 }) : '—'),
+                    typeof row.change === 'number' ? h('span', { style: { ...S.muted, fontSize: 10.5, fontVariantNumeric: 'tabular-nums' } }, `${row.change >= 0 ? '+' : ''}${formatNumber(row.change, { decimals: 2 })}`) : null),
+                  h('span', { style: { ...S.muted, fontSize: 10 } }, `${row.region ?? region}${row.asOf ? ` · ${row.asOf}` : ''} · 东财`))
+              })),
+      h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：东方财富全球指数；默认美国。指数点位与显示精度以源为准，数据可能延迟，不代表可交易报价。')))
+}
+
 function QuotesView(props: {
   data: LiveData
   quoteBy: Map<string, LiveQuote>
@@ -1169,6 +1237,7 @@ function QuotesView(props: {
 
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
     h(SearchAdd, { onAdd: (code, type) => mutate('addWatch', { code, type }) }),
+    h(GlobalIndicesPanel, null),
     group('市场总览',
       h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } },
         h('span', null, loading ? '刷新中…' : `${ago}更新`),
@@ -1255,6 +1324,20 @@ function HoldingsView(props: {
       else setLookErr(r.error ?? '穿透失败（持仓为空或权重不可计算）')
     } catch (e) { setLookErr(errText(e)) } finally { setLookLoading(false) }
   }, [])
+  // 持仓行：单击看 AI 解读，双击打开 K 线与详细资料；用定时器区分，避免双击先触发两次单击。
+  const rowTimers = useRef(new Map<string, number>())
+  useEffect(() => () => { for (const t of rowTimers.current.values()) window.clearTimeout(t); rowTimers.current.clear() }, [])
+  const rowClick = (key: string, action: () => void) => {
+    const prev = rowTimers.current.get(key)
+    if (prev) window.clearTimeout(prev)
+    const timer = window.setTimeout(() => { rowTimers.current.delete(key); action() }, 220)
+    rowTimers.current.set(key, timer)
+  }
+  const rowDouble = (key: string, action: () => void) => {
+    const prev = rowTimers.current.get(key)
+    if (prev) { window.clearTimeout(prev); rowTimers.current.delete(key) }
+    action()
+  }
   // 只在含基金持仓时自动穿透（纯股组合的「穿透」= 自身权重，无增量信息）；持仓数变化后重跑。
   const fundCount = data.holdings.filter((hd) => hd.type === 'fund').length
   const holdingsSignature = data.holdings.map(hd => [hd.type, hd.code, hd.quantity, hd.avgCost].join(':')).join('|')
@@ -1301,7 +1384,7 @@ function HoldingsView(props: {
     data.holdings.length ? h('div', { style: S.group },
       h('div', { style: S.groupHead },
         h('div', { style: { ...S.title, marginBottom: 0 } }, '逐仓明细'),
-        h('span', { style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, '点击看 AI 解读')),
+        h('span', { style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, '单击 AI 解读 · 双击 K线与资料')),
       h('div', { style: { padding: 9, display: 'flex', flexDirection: 'column', gap: 6 } },
         data.holdings.map((hd) => {
           const q = quoteBy.get(keyOf(hd.code, hd.type))
@@ -1318,7 +1401,9 @@ function HoldingsView(props: {
               ...S.card, gap: 5, cursor: 'pointer',
               borderLeft: `3px solid ${typeof hpnl === 'number' ? c : R.line}`,
             },
-            onClick: () => props.onOpen({ code: hd.code, type: hd.type, name: q?.name || hd.name }),
+            onClick: () => rowClick(`h-${hd.type}-${hd.code}`, () => props.onOpen({ code: hd.code, type: hd.type, name: q?.name || hd.name })),
+            onDoubleClick: () => rowDouble(`h-${hd.type}-${hd.code}`, () => requestSecurityOpen({ code: hd.code, name: q?.name || hd.name, type: hd.type })),
+            title: '单击看 AI 解读，双击看 K 线与详细资料',
           },
             h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
               h('span', { style: S.tag }, hd.type === 'fund' ? '基' : '股'),

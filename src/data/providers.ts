@@ -43,6 +43,7 @@ import {
   type GlobalFinancialRow,
   type GlobalFinancialsResult,
 } from './global-financials.js'
+import { fetchGlobalIndices } from './global-indices.js'
 import { normalizeFundHoldingRows, type NormalizedHolding } from '../fund-analysis.js'
 import {
   GLOBAL_MACRO_DEFAULT_POINTS,
@@ -332,6 +333,21 @@ async function emIndexMain(_args: Record<string, unknown>, ctx: ProviderContext)
     change: num(d.f4),
   }))
   return { rows, sampleKeys: rows[0] ? Object.keys(rows[0]) : [] }
+}
+
+/**
+ * 全球主要指数（东财 push2 qt/stock/get）。一个 secid 一个请求；解析、短缓存、
+ * 小并发与行级容错都在 global-indices.ts（可注入 fetchJson 离线测试）。
+ * 整体全部失败时抛错交给 registry 记录/回退；单行失败保留在该行 error 里。
+ */
+async function emGlobalIndices(args: Record<string, unknown>, ctx: ProviderContext) {
+  const report = await fetchGlobalIndices({
+    region: args.region ?? 'us',
+    timeoutMs: ctx.timeoutMs,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+  })
+  if (!report.ok) throw new Error(report.error ?? `全球指数行情不可用（region=${String(report.region ?? '')}）`)
+  return { data: report, rows: report.rows, sampleKeys: ['ok', 'at', 'region', 'rows', 'cacheHits', 'failed'] }
 }
 
 /**
@@ -1763,6 +1779,13 @@ export const PROVIDERS: ProviderMeta[] = [
     endpointRef: '__stock_zh_main_spot_em (index_stock_zh.py)',
     sampleArgs: {},
     call: emIndexMain,
+  },
+  {
+    id: 'em_global_indices',
+    capability: 'global_indices',
+    endpointRef: 'eastmoney push2 qt/stock/get（全球指数 secid：100.SPX/100.HSI/1.000001…；f43 点位、f170 涨跌幅、f86 行情时间戳）',
+    sampleArgs: { region: 'us' },
+    call: emGlobalIndices,
   },
   {
     id: 'em_main_finadata',

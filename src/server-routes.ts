@@ -9,6 +9,7 @@ import type { PortfolioStore } from './store.js'
 import type { McpManager } from './mcp/manager.js'
 import { buildStockDossier, dossierSummary } from './data/dossier.js'
 import { buildFundDossier } from './data/fund-dossier.js'
+import { normalizeGlobalRegion } from './data/global-indices.js'
 import { buildLookthrough } from './lookthrough.js'
 import type { ReminderOptions, ReminderScanResult, ReminderStore } from './reminders.js'
 import type { PanelBus } from './panel-bus.js'
@@ -1068,6 +1069,20 @@ export function registerRoutes(
           const rawLimit = url.searchParams.get('limit')
           const limit = rawLimit === null ? undefined : Number(rawLimit)
           const report = await finance.getMacroGlobal(requested.length ? requested : undefined, undefined, limit)
+          return sendJson(res, 200, report)
+        }
+        // 全球主要指数（东财 push2）：默认美国，region=us|asia|europe|china|all。
+        // at 是抓取时间，行内 asOf 是源侧行情时间；字段缺失 null、不补 0；单行失败不拖垮整体。
+        if (req.method === 'GET' && sub === '/global-indices') {
+          const rawRegion = (url.searchParams.get('region') ?? '').trim()
+          const region = normalizeGlobalRegion(rawRegion || 'us')
+          if (!region) {
+            return sendJson(res, 400, {
+              ok: false, at: new Date().toISOString(), region: null, rows: [], cacheHits: 0, failed: 0,
+              error: `未知区域：${rawRegion}；可选 us/asia/europe/china/all`,
+            })
+          }
+          const report = await finance.getGlobalIndices(region)
           return sendJson(res, 200, report)
         }
         if (req.method === 'GET' && sub === '/fundrank') {

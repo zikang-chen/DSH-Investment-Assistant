@@ -3,6 +3,7 @@ import type { AssetType, Holding, KlineBar, PortfolioHolding, SearchResult, Stoc
 import type { NormalizedHolding } from '../fund-analysis.js'
 import { stripMarketSuffix } from './http.js'
 import { fetchGlobalMacroReport } from './providers.js'
+import { normalizeGlobalRegion, type GlobalIndicesReport } from './global-indices.js'
 import type { GlobalFinancialsResult } from './global-financials.js'
 import type { ProviderRegistry } from './registry.js'
 import {
@@ -180,6 +181,30 @@ export class FinanceDataService {
 
   async getMarketOverview(signal?: AbortSignal) {
     return this.registry.call('indices', {}, signal)
+  }
+
+  /**
+   * 全球主要指数：默认美国，region=us/asia/europe/china/all。
+   * 走 provider 能力 global_indices（东财 push2）；顶层 at 是抓取时间，行内 asOf 是
+   * 源侧行情时间，两者不混用；字段缺失为 null 不补 0，单行失败只影响该行。
+   */
+  async getGlobalIndices(region: string = 'us', signal?: AbortSignal): Promise<GlobalIndicesReport> {
+    const normalized = normalizeGlobalRegion(region)
+    const at = new Date().toISOString()
+    if (!normalized) {
+      return {
+        ok: false, at, region: null, rows: [], cacheHits: 0, failed: 0,
+        error: `未知区域：${String(region ?? '')}；可选 us/asia/europe/china/all`,
+      }
+    }
+    const r = await this.registry.call<GlobalIndicesReport>('global_indices', { region: normalized }, signal)
+    if (r.ok && r.data) return { ...r.data, ...(r.provider ? { provider: r.provider } : {}) }
+    return {
+      ok: false, at, region: normalized, rows: [], cacheHits: 0, failed: 0,
+      ...(r.provider ? { provider: r.provider } : {}),
+      error: r.error ?? '全球指数行情不可用',
+      ...(r.attempts?.length ? { attempts: r.attempts } : {}),
+    }
   }
 
   async getUsQuote(code: string, signal?: AbortSignal) {

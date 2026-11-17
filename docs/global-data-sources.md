@@ -12,6 +12,13 @@
 | 基金 | 净值/排行/净值走势 | 东财 `fund_quote`/`fund_kline`/`fund_rank` | 净值 T+1；日期是净值日，不是实时价 |
 | 基金档案 | 经理/规模/申赎/同类排名/重仓/风险/基准 | `fund_dossier`（东财画像 + 本地计算） | 重仓披露有滞后；场外完整持仓需定期报告 |
 
+## 全球指数行情（默认美国）
+
+- 面板「市场研究 → 行情」顶部新增「全球行情」，默认美国，可切亚太/欧洲/中国；HTTP `GET /global-indices?region=us|asia|europe|china|all`。
+- 数据源：东方财富 `push2` 全球指数；美国（标普500/道琼斯/纳斯达克）、亚太（恒生/日经/韩国/印度/澳洲）、欧洲（富时/DAX/CAC）、中国（上证/深证/创业板）。
+- 返回 `price / changePct / change / asOf / source`；字段缺失为 `null`，不补 0；抓取时间与行情时间分开。单指数失败只影响该行，失败不缓存。
+- 指数点位以源为准，可能延迟，不是可交易报价；不声称覆盖全球所有交易所。
+
 ## 全球宏观（结构化）
 
 工具：`get_macro_global`；面板：`/macro/global`。每个序列返回 `source / unit / asOf / fetchedAt / points / latest / provenance / notes`，失败带 `error`，不补 0。

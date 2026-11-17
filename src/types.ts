@@ -6,6 +6,8 @@ export type Capability =
   | 'quotes_batch'
   | 'kline'
   | 'indices'
+  /** 全球主要指数（东财 push2；区域 us/asia/europe/china）。 */
+  | 'global_indices'
   | 'financials'
   | 'sectors'
   // 港股
@@ -129,6 +131,7 @@ export const CAPABILITIES: Capability[] = [
   'quotes_batch',
   'kline',
   'indices',
+  'global_indices',
   'financials',
   'sectors',
   'hk_quote',
@@ -228,6 +231,8 @@ export const DEFAULT_PROVIDER_ORDER: Record<Capability, string[]> = {
   kline: ['ws_kline', 'em_kline', 'tx_kline'],
   // 指数同样走 WeStock（`westock quote sh000001,sz399001,…`），东财作为回落。
   indices: ['ws_indices', 'em_index_main'],
+  // 全球指数：东财 push2 qt/stock/get 单一来源（一个 secid 一个请求，行级容错）。
+  global_indices: ['em_global_indices'],
   financials: ['em_main_finadata', 'ws_financials'],
   // 东财板块榜保持首选（面板列格式依赖它）；WeStock 板块榜作为回落源。
   sectors: ['em_industry_board', 'ws_sector_ranking'],

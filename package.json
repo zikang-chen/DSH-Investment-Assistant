@@ -55,6 +55,7 @@
     "test:fund-ui": "tsx scripts/test_fund_ui.ts",
     "test:intl-policy": "tsx scripts/test_policy_intl_sources.ts",
     "test:dossier-global": "tsx scripts/test_dossier_global_sections.ts",
+    "test:global-indices": "tsx scripts/test_global_indices.ts",
     "test:regressions": "tsx scripts/test_regressions.ts",
     "test:wealth": "tsx scripts/test_wealth.ts",
     "test:investment": "tsx scripts/test_investment.ts",
