@@ -81,7 +81,7 @@ export async function fetchKlinePaged(
   for (let page = 0; page < Math.max(1, Math.min(MAX_HISTORY_PAGES, maxPages)); page++) {
     const r = await fetchPage(end)
     if (!r.ok || !Array.isArray(r.data) || r.data.length === 0) {
-      if (page === 0) error = r.error
+      if (!r.ok) { error = r.error ?? '历史分页请求失败'; truncatedAt = end }
       break
     }
     const pageAdjustment = requestedAdjustment(r.provider, kind)
@@ -92,11 +92,12 @@ export async function fetchKlinePaged(
     }
     provider = r.provider ?? provider
     const bars = r.data as KlineBar[]
-    pages.push(bars)
-    if (bars.length < PAGE_CAP) break
     const earliest = bars.map((b) => b.date).sort()[0]
     if (!earliest) break
-    if (page === MAX_HISTORY_PAGES - 1) { truncatedAt = prevDay(earliest); break }
+    if (end && earliest > end) { error = '行情源未遵循分页截止日期，已停止重复分页'; truncatedAt = end; break }
+    pages.push(bars)
+    if (bars.length < PAGE_CAP) break
+    if (page === Math.max(1, Math.min(MAX_HISTORY_PAGES, maxPages)) - 1) { truncatedAt = prevDay(earliest); break }
     end = prevDay(earliest)
   }
   // 合并各页：按日期升序拼接，同日保留较新页（先旧后新覆盖）。
@@ -167,18 +168,26 @@ export async function syncHistory(
   const adjustment = requestedAdjustment(klineProvider, resolvedKind, 'hfq')
   let merged: { added: number; rejected: number } = { added: 0, rejected: 0 }
   if (bars.length) {
-    // 全量拉取 = 以本次结果为准（顺带把旧 qfq 稀疏序列升级为 hfq）；
-    // 增量拉取 = 合并追加；若口径冲突（旧 qfq 文件）则整体替换，不让两套口径混在一起。
-    if (!options.since) {
-      merged = await store.replaceKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
-    } else {
-      try {
-        merged = await store.mergeKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
-      } catch (err) {
-        if (/复权口径不一致/.test(err instanceof Error ? err.message : String(err))) {
-          merged = await store.replaceKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
-        } else throw err
+    const existing = await store.read(code, resolvedKind)
+    const conflict = existing && existing.adjustment !== 'unknown' && adjustment !== 'unknown' && existing.adjustment !== adjustment
+    if (conflict) {
+      // NEVER replace years of history with a short incremental response. A basis
+      // migration is allowed only when a full, successful response covers the old range.
+      const dates = bars.map(b => b.date).sort()
+      const old = existing.kline
+      const coversExisting = !options.since && !klineError && !truncatedAt && dates[0] &&
+        (!old.length || (dates[0] <= old[0]!.date && dates[dates.length - 1]! >= old[old.length - 1]!.date))
+      if (coversExisting) {
+        merged = await store.replaceKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
+      } else {
+        return { ok: false, kind: resolvedKind, provider: klineProvider, bars: bars.length, addedBars: 0,
+          rejectedBars: 0, adjustment, pages, truncatedAt, events: 0, addedEvents: 0,
+          klineError: `复权口径不一致（${existing.adjustment} vs ${adjustment}）；保留原历史，需完整同步后迁移，不能用局部数据覆盖。` }
       }
+    } else {
+      // A provider may return only a recent window or fail on older pages. Merge
+      // rather than replace so partial availability never truncates cached history.
+      merged = await store.mergeKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
     }
   }
 

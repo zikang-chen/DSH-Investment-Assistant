@@ -14,6 +14,7 @@ import path from 'node:path'
 import { collectOne, type CollectDeps } from './collect.js'
 import { fetchPolicyDocument, hostAllowed, sha256Hex, type FetchOptions } from './fetch.js'
 import type { PolicyDocType } from './types.js'
+import { decodeBody } from './extract.js'
 
 export type AttachmentKind = 'pdf' | 'xls' | 'xlsx' | 'csv' | 'doc' | 'docx' | 'zip' | 'other'
 
@@ -51,15 +52,31 @@ function stripTags(html: string): string {
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim()
 }
 
-/** Extract a YYYY-MM-DD / YYYY-MM / YYYY年M月 date from text or URL. */
+/** Only complete, valid calendar dates are publication-date candidates. */
 export function extractDate(text: string): string | undefined {
-  const m1 = /(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/.exec(text)
-  if (m1) return `${m1[1]}-${m1[2]!.padStart(2, '0')}-${m1[3]!.padStart(2, '0')}`
-  const m2 = /(\d{4})[-/年](\d{1,2})月?/.exec(text)
-  if (m2) return `${m2[1]}-${m2[2]!.padStart(2, '0')}`
-  const m3 = /(20\d{2})(\d{2})(\d{2})/.exec(text)
-  if (m3) return `${m3[1]}-${m3[2]}-${m3[3]}`
-  return undefined
+  const match = /(?:^|\D)((?:19|20)\d{2})[-/年](\d{1,2})[-/月](\d{1,2})(?!\d)/.exec(text)
+    ?? /(?:^|\D)((?:19|20)\d{2})(\d{2})(\d{2})(?!\d)/.exec(text)
+  if (!match) return undefined
+  const day = `${match[1]}-${match[2]!.padStart(2, '0')}-${match[3]!.padStart(2, '0')}`
+  const parsed = new Date(`${day}T00:00:00Z`)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === day ? day : undefined
+}
+
+/** Do not infer publication dates from titles, article text or reporting periods. */
+function publicationDate(html: string, url: string): string | undefined {
+  const urlDate = extractDate(new URL(url).pathname)
+  if (urlDate) return urlDate
+  for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
+    const attrs = new Map<string, string>()
+    for (const m of tag.matchAll(/([\w:-]+)\s*=\s*["']([^"']*)["']/g)) attrs.set(m[1]!.toLowerCase(), m[2]!)
+    const name = attrs.get('name') ?? attrs.get('property') ?? ''
+    if (/^(?:article:published_time|datepublished|pubdate|publishdate|publicationdate|firstpublishedtime)$/i.test(name)) {
+      const date = extractDate(attrs.get('content') ?? '')
+      if (date) return date
+    }
+  }
+  const labeled = /(?:发布时间|发布日期)[：:]\s*(\d{4}[-/年]\d{1,2}[-/月]\d{1,2})/.exec(stripTags(html))
+  return labeled ? extractDate(labeled[1]!) : undefined
 }
 
 export function extractAnchors(html: string, baseUrl: string): OfficialAnchor[] {
@@ -72,7 +89,7 @@ export function extractAnchors(html: string, baseUrl: string): OfficialAnchor[] 
     let abs: string
     try { abs = new URL(href, baseUrl).toString() } catch { continue }
     const label = stripTags(m[2] ?? '')
-    out.push({ url: abs, label, date: extractDate(`${label} ${abs}`) })
+    out.push({ url: abs, label, date: extractDate(new URL(abs).pathname) })
   }
   return out
 }
@@ -140,7 +157,7 @@ export interface OfficialCollectOptions {
   url: string
   /** How many list pages to walk (default 1; pagination follows 下一页). */
   maxPages?: number
-  /** How many article documents to import (default 20). */
+  /** Maximum document attempts across every phase; duplicates/failures count (default 20). */
   maxDocs?: number
   /** Inclusive publish-date window, e.g. from '2024-01-01'. */
   from?: string
@@ -155,9 +172,10 @@ export interface OfficialCollectOptions {
 
 export function inWindow(date: string | undefined, from?: string, to?: string): boolean {
   if (!date) return true // unknown date: keep (so historical items are not silently dropped)
-  const day = date.length === 7 ? `${date}-99` : date
-  if (from && day < from) return false
-  if (to && day > `${to}-99`) return false
+  // A partial/invalid date is not reliable enough to exclude a document.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || extractDate(date) !== date) return true
+  if (from && date < from) return false
+  if (to && date > to) return false
   return true
 }
 
@@ -165,77 +183,112 @@ export function inWindow(date: string | undefined, from?: string, to?: string): 
  * Crawl an official list/article page: walk pagination, import article documents,
  * and optionally save attachments. Everything is bounded by allowlist + robots.
  */
-export async function collectOfficialPages(deps: CollectDeps, options: OfficialCollectOptions): Promise<OfficialCollectResult> {
+export interface OfficialCollectRuntime {
+  fetch?: typeof fetchPolicyDocument
+  collectOne?: typeof collectOne
+  countExcelRows?: (buffer: Buffer, kind: AttachmentKind) => Promise<number | undefined>
+  /** Delay between sequential fetch/collect operations (default 1000ms). */
+  gapMs?: number
+  sleep?: (ms: number) => Promise<void>
+}
+
+export async function collectOfficialPages(deps: CollectDeps, options: OfficialCollectOptions, runtime: OfficialCollectRuntime = {}): Promise<OfficialCollectResult> {
   const maxPages = Math.max(1, Math.min(30, options.maxPages ?? 1))
   const maxDocs = Math.max(1, Math.min(50, options.maxDocs ?? 20))
   const maxAttachments = Math.max(0, Math.min(30, options.maxAttachments ?? 20))
   const result: OfficialCollectResult = { ok: true, url: options.url, pagesVisited: 0, documents: [], attachments: [], tables: 0, errors: [] }
   if (!hostAllowed(options.url, deps.hosts)) {
-    return { ...result, ok: false, errors: [`链接不在允许清单内：${new URL(options.url).host}`] }
+    return { ...result, ok: false, errors: [`链接无效或不在允许清单内：${options.url}`] }
   }
   const fetchOpts: FetchOptions = {
     hosts: deps.hosts, timeoutMs: deps.timeoutMs, maxBytes: deps.maxBytes,
     respectRobots: true, robotsCache: deps.robotsCache, signal: deps.signal,
   }
+  const fetchDocument = runtime.fetch ?? fetchPolicyDocument
+  const importDocument = runtime.collectOne ?? collectOne
+  const sleep = runtime.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  const gapMs = Math.max(0, runtime.gapMs ?? 1000)
+  let operations = 0
+  const pace = async (): Promise<void> => { if (operations++ > 0 && gapMs > 0) await sleep(gapMs) }
+  const fetchPage = async (url: string) => {
+    if (!hostAllowed(url, deps.hosts)) throw new Error(`链接不在允许清单内：${url}`)
+    await pace()
+    const res = await fetchDocument(url, fetchOpts)
+    if (!hostAllowed(res.url, deps.hosts)) throw new Error(`重定向不在允许清单内：${res.url}`)
+    return res
+  }
   const visited = new Set<string>()
+  const seenDoc = new Set<string>()
   const queue = [options.url]
   const articles: OfficialAnchor[] = []
   const attachments: OfficialAttachment[] = []
   const dates: string[] = []
+  let attempts = 0
+  const importOne = async (url: string, title?: string, date?: string): Promise<void> => {
+    await pace()
+    const one = await importDocument(deps, {
+      url, sourceId: options.sourceId ?? 'official-page', sourceClass: 'official',
+      issuer: options.issuer ?? '', docType: options.docType ?? 'other',
+      titleHint: title, publishedHint: date,
+    })
+    result.documents.push({ id: one.doc?.id, url, title: one.doc?.title ?? title, action: one.action, reason: one.reason ?? one.error })
+    if (!one.ok) result.errors.push(`${url}: ${one.error ?? one.reason ?? '采集失败'}`)
+    if (date) dates.push(date)
+  }
 
   while (queue.length && result.pagesVisited < maxPages) {
     const pageUrl = queue.shift()!
     if (visited.has(pageUrl)) continue
     visited.add(pageUrl)
+    result.pagesVisited += 1
     try {
-      const res = await fetchPolicyDocument(pageUrl, fetchOpts)
-      result.pagesVisited += 1
+      const res = await fetchPage(pageUrl)
       if (!/html|xml|text\/plain/i.test(res.contentType) && !/\.html?$/i.test(new URL(pageUrl).pathname)) {
         result.errors.push(`跳过非 HTML 页面（${res.contentType}）：${pageUrl}`)
         continue
       }
-      const html = res.buffer.toString('utf8')
+      const html = decodeBody(res.buffer, res.contentType)
       result.tables += extractTables(html).length
       for (const a of extractArticleLinks(html, res.url)) {
-        if (a.url === pageUrl) continue
+        if (a.url === pageUrl || !hostAllowed(a.url, deps.hosts)) continue
         if (!inWindow(a.date, options.from, options.to)) continue
         articles.push(a)
-        if (a.date) dates.push(a.date)
       }
       for (const att of extractAttachmentLinks(html, res.url)) attachments.push(att)
       for (const next of extractNextPageUrls(html, res.url)) {
         if (!visited.has(next) && hostAllowed(next, deps.hosts)) queue.push(next)
       }
-      // 该页本身可能就是正文页：段落足够多时直接入库。
-      const paragraphCount = (html.match(/<p\b/gi) ?? []).length
-      if (paragraphCount >= 3) {
-        const one = await collectOne(deps, {
-          url: res.url, sourceId: options.sourceId ?? 'official-page', sourceClass: 'official',
-          issuer: options.issuer ?? '', docType: options.docType ?? 'other',
-          publishedHint: extractDate(res.url) ?? extractDate(html.slice(0, 4000)),
-        })
-        result.documents.push({ id: one.doc?.id, url: res.url, title: one.doc?.title, action: one.action, reason: one.reason ?? one.error })
+      const date = publicationDate(html, res.url)
+      // One shared attempt budget, including direct pages, duplicates and failures.
+      if ((html.match(/<p\b/gi) ?? []).length >= 3 && attempts < maxDocs
+        && !seenDoc.has(res.url) && inWindow(date, options.from, options.to)) {
+        seenDoc.add(res.url)
+        attempts += 1
+        await importOne(res.url, undefined, date)
       }
     } catch (err) {
       result.errors.push(`${pageUrl}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
-  // Import article documents (dedupe by URL, bounded).
-  const seenDoc = new Set<string>()
   for (const a of articles) {
-    if (result.documents.filter((d) => d.action === 'added' || d.action === 'updated').length >= maxDocs) break
+    if (attempts >= maxDocs) break
     if (seenDoc.has(a.url)) continue
     seenDoc.add(a.url)
+    attempts += 1
     try {
-      const one = await collectOne(deps, {
-        url: a.url, sourceId: options.sourceId ?? 'official-page', sourceClass: 'official',
-        issuer: options.issuer ?? '', docType: options.docType ?? 'other',
-        titleHint: a.label, publishedHint: a.date,
-      })
-      result.documents.push({ id: one.doc?.id, url: a.url, title: one.doc?.title ?? a.label, action: one.action, reason: one.reason ?? one.error })
+      // Inspect each selected article too: many official lists only link to a
+      // detail page, and that page contains the actual XLSX/PDF download.
+      const res = await fetchPage(a.url)
+      const html = decodeBody(res.buffer, res.contentType)
+      const date = publicationDate(html, res.url)
+      if (!inWindow(date, options.from, options.to)) continue
+      if (options.includeAttachments) attachments.push(...extractAttachmentLinks(html, res.url))
+      await importOne(a.url, a.label, date)
     } catch (err) {
-      result.documents.push({ url: a.url, title: a.label, reason: err instanceof Error ? err.message : String(err) })
+      const reason = err instanceof Error ? err.message : String(err)
+      result.documents.push({ url: a.url, title: a.label, reason })
+      result.errors.push(`${a.url}: ${reason}`)
     }
   }
 
@@ -245,14 +298,14 @@ export async function collectOfficialPages(deps: CollectDeps, options: OfficialC
     for (const att of attachments) if (!uniq.has(att.url)) uniq.set(att.url, att)
     for (const att of [...uniq.values()].slice(0, maxAttachments)) {
       try {
-        const res = await fetchPolicyDocument(att.url, fetchOpts)
+        const res = await fetchPage(att.url)
         // Save via the same original-store used by policy docs (content-addressed, dedup).
         const saved = await deps.store.saveOriginal(res.buffer, res.contentType || 'application/octet-stream', sha256Hex(res.buffer))
         const rowEntry: OfficialCollectResult['attachments'][number] = { url: att.url, label: att.label, kind: att.kind, bytes: res.bytes, savedAs: saved.path }
         if (att.kind === 'csv') {
           rowEntry.rows = res.buffer.toString('utf8').split(/\r?\n/).filter(Boolean).length
         } else if (att.kind === 'xlsx' || att.kind === 'xls') {
-          rowEntry.rows = await countExcelRows(res.buffer, att.kind)
+          rowEntry.rows = await (runtime.countExcelRows ?? countExcelRows)(res.buffer, att.kind)
         }
         result.attachments.push(rowEntry)
       } catch (err) {
@@ -265,6 +318,8 @@ export async function collectOfficialPages(deps: CollectDeps, options: OfficialC
     const sorted = dates.slice().sort()
     result.coverage = { from: sorted[0], to: sorted[sorted.length - 1] }
   }
+  // Partial failures remain visible rather than reporting unconditional success.
+  result.ok = result.errors.length === 0 && result.attachments.every((att) => !att.error)
   return result
 }
 

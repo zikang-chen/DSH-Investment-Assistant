@@ -18,7 +18,7 @@ test('classifyAttachment recognises official file types', () => {
 
 test('extractDate handles Chinese and numeric dates', () => {
   assert.equal(extractDate('2026年3月5日 发布'), '2026-03-05')
-  assert.equal(extractDate('2024-12'), '2024-12')
+  assert.equal(extractDate('2024-12'), undefined, '月份不是可信的发布日期')
   assert.equal(extractDate('t20260315_123.html'), '2026-03-15')
   assert.equal(extractDate('没有日期'), undefined)
 })
@@ -42,8 +42,8 @@ test('extractArticleLinks skips nav chrome by label length', () => {
   const arts = extractArticleLinks(html, 'https://www.pbc.gov.cn/diaochatongjisi/116219/116319/index.html')
   assert.equal(arts.length, 1)
   assert.match(arts[0]!.label, /社会融资/)
-  // 标签里的「2026年2月」是统计月份，优先于 URL 的发布日期；区间过滤用它即可。
-  assert.equal(arts[0]!.date, '2026-02')
+  // 统计月份不能冒充发布日期，URL完整日期优先。
+  assert.equal(arts[0]!.date, '2026-03-15')
 })
 
 test('extractNextPageUrls finds 下一页/Next', () => {
@@ -62,7 +62,7 @@ test('extractTables returns rows of cell text', () => {
 test('inWindow allows unknown dates and filters by range', () => {
   assert.equal(inWindow(undefined, '2020-01-01', '2020-12-31'), true, '未知日期不应被静默丢弃')
   assert.equal(inWindow('2026-03-05', '2026-01-01', '2026-12-31'), true)
-  assert.equal(inWindow('2019-03', '2026-01-01'), false)
+  assert.equal(inWindow('2019-03', '2026-01-01'), true, '不可靠的月份不能作为发布日期筛掉文件')
   assert.equal(inWindow('2027-01-01', undefined, '2026-12-31'), false)
 })
 

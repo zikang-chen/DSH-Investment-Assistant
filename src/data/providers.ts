@@ -282,7 +282,8 @@ async function txKlineBySymbol(symbol: string, args: Record<string, unknown>, ct
     data?: Record<string, { day?: string[][]; qfqday?: string[][]; hfqday?: string[][] }>
   }
   const block = payload.data?.[symbol]
-  const day = block?.day ?? block?.qfqday ?? block?.hfqday
+  // Never silently relabel unadjusted/forward-adjusted bars as hfq.
+  const day = adjust === 'hfq' ? block?.hfqday : adjust === 'qfq' ? block?.qfqday : block?.day
   if (!day?.length) throw new Error('tencent kline: empty day series')
   return day.map((row) => ({
     date: String(row[0]),

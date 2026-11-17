@@ -136,7 +136,7 @@ async function api<T>(path = '', body?: unknown, signal?: AbortSignal): Promise<
   if (!r.ok || data.ok === false) throw new Error(data.error ?? `请求失败 (${r.status})`)
   return data
 }
-export function PersonalHome({ deliver, navigate, useBus, openReminders, embedded = false }: {
+export function PersonalHome({ deliver, navigate, useBus, openReminders, embedded = false, planningOnly = false }: {
   deliver: (text: string) => Promise<'sent' | 'copied' | 'failed'>
   navigate: (tab: string) => void
   /** 订阅面板总线（index.tsx 注入）：成长/资料/持仓变更即时刷新，不等轮询。 */
@@ -144,6 +144,8 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
   openReminders?: () => void
   /** 嵌入总览聚合区下方：仅省略重复汇总，保留档案、复盘和人工确认。 */
   embedded?: boolean
+  /** Personal planning belongs under 我的资本, not the research overview. */
+  planningOnly?: boolean
 }) {
   const [data, setData] = useState<Home>()
   const [view, setView] = useState<View>('overview')
@@ -192,7 +194,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
   // Agent → 面板页内锚点：panel_navigate(anchor=…) → 切分区并滚动到区块。
   useEffect(() => {
     const apply = (d: { tab?: string; anchor?: string; at?: number }) => {
-      if (d.tab && d.tab !== 'home') return
+      if (d.tab && d.tab !== (planningOnly ? 'wealth' : 'journal')) return
       if (!d.anchor || !HOME_ANCHORS.has(d.anchor)) return
       if (d.at && anchorAt.current === d.at) return
       anchorAt.current = d.at ?? Date.now()
@@ -249,7 +251,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
   return <div className="finance-home" data-embedded={embedded} data-panel-anchor="overview" ref={homeRef}>
     <style>{css}</style>
     {embedded ? <header className="fh-section-header">
-      <h2>研究档案与复盘</h2>
+      <h2>{planningOnly ? '个人财务规划' : '研究档案与复盘'}</h2>
       <p>本地档案 · 人工确认</p>
     </header> : <header className="fh-hero">
       <span className="fh-eyebrow">FINANCE / MY DESK</span>
@@ -262,20 +264,20 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
     </header>}
     {error && <div role="alert" className="fh-alert fh-error">{error}</div>}
     {notice && <div role="status" className="fh-alert fh-toast"><span>{notice}</span><button type="button" className="fh-btn" aria-label="关闭提示" onClick={() => setNotice('')}>关闭</button></div>}
-    <nav aria-label="个人首页分区" className="fh-nav">{sections.map(t =>
-      <button key={t.id} type="button" onClick={() => setView(t.id)} aria-current={view === t.id ? 'page' : undefined}>{t.label}{t.count ? ` ${t.count}` : ''}</button>)}</nav>
+    {!planningOnly && <nav aria-label="个人首页分区" className="fh-nav">{sections.map(t =>
+      <button key={t.id} type="button" onClick={() => setView(t.id)} aria-current={view === t.id ? 'page' : undefined}>{t.label}{t.count ? ` ${t.count}` : ''}</button>)}</nav>}
     {!data && <div className="fh-card" role="status">{error ? <button className="fh-btn" onClick={() => void run(async () => {})}>重新连接</button> : '正在读取本地档案…'}</div>}
     {data && view === 'overview' && <>
-      {!embedded && <div className={`fh-stat-grid${data.growth ? ' fh-stat-four' : ''}`}>
+      {!embedded && <div className="fh-stat-grid">
         {([
           [data.profile ? '已完成' : '待完成', '投资建档'],
           [`${data.theses.length}`, '投资判断'],
           [`${data.metrics.reviewed}/${data.metrics.generated}`, '已复核 / 卡片'],
-          ...(data.growth ? [[`${data.growth.summary.total ?? '—'}`, '成长综合']] : []),
+
         ] as Array<[string, string]>).map(([value, label]) =>
           <div className="fh-card" key={label}><div className="fh-stat">{value}</div><div className="fh-muted">{label}</div></div>)}
       </div>}
-      <Section title="接下来做什么" meta="按重要性排序">
+      {!planningOnly && <><Section title="接下来做什么" meta="按重要性排序">
         <p className="fh-muted fh-section-copy">{!data.profile ? '先填写目标、期限与风险承受能力，让后续判断有参照。' : data.pending.length ? `${data.pending.length} 项变更等待你检查前后差异。Agent 不会替你确认。` : !data.theses.length ? '记录投资理由，写清验证指标与证伪条件。' : outstanding ? `有 ${outstanding} 张卡片待生成或待人工复核。` : '没有待处理卡片。可以生成本周复盘，或下周再对照新证据。'}</p>
         <div className="fh-row">
           <button className="fh-btn fh-primary" onClick={() => setView(!data.profile ? 'journal' : data.pending.length ? 'approvals' : !data.theses.length ? 'journal' : 'reviews')}>
@@ -308,9 +310,9 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
         {data.reminders.filter(r => !r.read).slice(0, 2).map(r => <div key={r.id} className="fh-muted fh-copy">{r.title}</div>)}
         <p className="fh-muted">持仓按原币展示；缺少可靠汇率时，不合并跨币种收益。</p>
       </Section>}
-      {data.growth && (() => {
+      </>}
+      {planningOnly && data.growth && (() => {
         const g = data.growth!
-        const total = g.summary.total
         const pillarColors: Record<keyof GrowthSummary['pillars'], string> = { knowledge: teal, plan: success, discipline: warning, assets: secondary }
         const pillars: Array<[keyof GrowthSummary['pillars'], string]> = [['knowledge', '认知'], ['plan', '规划'], ['discipline', '纪律'], ['assets', '资产']]
         const kindChip: Record<DiagnosisFinding['kind'], { label: string; color: string }> = {
@@ -319,13 +321,13 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
           discipline: { label: '纪律', color: secondary },
           review: { label: '复盘', color: success },
         }
-        return <Section title="成长" anchor="growth" meta={total !== null ? `综合 ${total} · ${g.summary.level.label}` : g.summary.level.label}>
+        return <Section title="财务规划与学习" anchor="growth" meta="本机记录 · 不评价投资能力">
+          <p className="fh-muted">规划用于梳理应急金、目标与保障；缺少资料不等于能力为零。学习与复盘不按收益排名。</p>
+          <details><summary>查看学习进度与规划建议</summary>
           <div className="fh-growth-overview">
-            <div className="fh-score" title={total !== null ? `综合 ${total} 分` : '数据不足，综合分待生成'}>
-              <div className="fh-score-value">{total ?? '—'}</div>
-            </div>
+
             <div className="fh-growth-badges">
-              <Badge tone="good">{g.summary.level.label}</Badge>
+              <Badge>学习记录</Badge>
               <Badge>连续 {g.streakWeeks} 周</Badge>
               <Badge>课程 {g.lessons.mastered}/{g.lessons.total}</Badge>
               <Badge tone={g.health.score === null ? '' : g.health.score >= 70 ? 'good' : g.health.score < 50 ? 'warn' : 'info'}>健康度 {g.health.score ?? '—'}</Badge>
@@ -371,13 +373,14 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
               setNotice(deliveryNote(await deliver('做一次成长复盘：装载成长状态，按四柱（学习/计划/纪律/资产）给出下一步建议')))
             })}>在对话中复盘</button>
           </div>
-          <p className="fh-muted" style={{ marginTop: 8 }}>诊断依据来自本地持仓/观点/复盘记录；评分只谈过程，不评价收益、不鼓励交易。家庭财务数据仅保存在本机。</p>
+          <p className="fh-muted" style={{ marginTop: 8 }}>建议依据来自本地档案与复盘记录，不代表投资能力评级。家庭财务数据仅保存在本机。</p>
+          </details>
         </Section>
       })()}
-      <Section title="价值验证">
+      {!planningOnly && <Section title="价值验证">
         {!embedded && <p className="fh-muted">连续复核 {data.metrics.consecutiveWeeks} 周 · 已复核 {data.metrics.reviewed}/{data.metrics.generated} 张。</p>}
         <p className="fh-muted fh-copy">质量取决于是否对照原判断、检查指标与反证并解释决定；不以打开次数或交易频率衡量。</p>
-      </Section>
+      </Section>}
     </>}
     {data && view === 'journal' && <>
       <Section title="01 / 投资档案" meta={data.profile && !editProfile ? '已完成' : '先建立参照'} anchor="journal">

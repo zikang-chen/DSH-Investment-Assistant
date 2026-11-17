@@ -73,11 +73,11 @@ test('search transports requested bounds without changing internal identifier re
 })
 test('security entry, detail, chart and private-data boundaries are actually wired', () => {
   assert.match(entry, /h\(FundWorkspace, \{ get: apiGet, active: tab === 'funds'/)
-  assert.match(entry, /onOpenFund: \(item\) => \{ setSecurityReturnTab\('funds'\); setDossierTarget/)
+  assert.match(entry, /onOpenFund: \(item\) => \{ if \(!selectTab\('dossier'\)\) return; setSecurityReturnTab\('funds'\); setDossierTarget/)
   assert.match(entry, /h\(SecurityWorkspace/)
   assert.match(entry, /window\.addEventListener\(SECURITY_OPEN_EVENT/)
   assert.match(entry, /window\.removeEventListener\(SECURITY_OPEN_EVENT/)
-  assert.match(entry, /onChart: \(item\) => \{ setKlineTarget\(\{ code: item\.code, kind: inferKlineKind\(item\.code, item\.type\)/)
+  assert.match(entry, /onChart: \(item\) => \{ if \(!selectTab\('quotes'\)\) return; setChartFromDossier\(true\); setKlineTarget\(\{ code: item\.code, kind: inferKlineKind\(item\.code, item\.type\)/)
   assert.match(detail, /sequence\.current === id/)
   assert.match(detail, /section\.provider/)
   assert.match(detail, /section\.dataAsOf/)
@@ -123,7 +123,7 @@ test('shell renders stable identity helpers and truthful K-line states', () => {
   assert.match(entry, /historyKind: historyKindOf/)
   assert.match(entry, /setLoaded\(null\); setHist\(null\); setManifest\(null\); setHistError\(''\)/)
   assert.match(entry, /本地历史读取失败：\$\{histError\}/)
-  assert.match(entry, /if \(id === 'dossier' && tab !== 'dossier'\) setSecurityReturnTab\(tab\)/)
+  assert.match(entry, /if \(id === 'dossier' && tab !== 'dossier' && !preserveReturn\) setSecurityReturnTab\(tab\)/)
 })
 test('double-click opens K-line and dossier while single click stays explicit', () => {
   assert.match(entry, /onDoubleClick: doubleClick/)

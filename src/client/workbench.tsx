@@ -41,7 +41,7 @@ interface EvidenceList { stats?: { waiting?: number }; requests?: Array<{ reques
 interface CapitalOverview { accounts?: Array<{ name: string }>; events?: number; positions?: unknown[]; netInvested?: Record<string, number>; warnings?: string[] }
 interface WorkbenchProps { get: ReadApi; deliver: Deliver; navigate: (tab: string) => void; useBus: UsePanelBus }
 
-export function OverviewWorkbench(props: WorkbenchProps & { onOpenPolicy: (id: string) => void }) {
+export function OverviewWorkbench(props: WorkbenchProps & { onOpenPolicy: (id: string) => void; onOpenAdvice: (id: string) => void; marketSummary?: ReactNode; portfolioSummary?: ReactNode }) {
   const [advice, reloadAdvice] = useRead<AdviceList>(props.get, '/advice?limit=3')
   const [evidence, reloadEvidence] = useRead<EvidenceList>(props.get, '/evidence?limit=5')
   const [capital, reloadCapital] = useRead<CapitalOverview>(props.get, '/capital')
@@ -92,14 +92,28 @@ export function OverviewWorkbench(props: WorkbenchProps & { onOpenPolicy: (id: s
       <Button type="submit" variant="primary" disabled={!question.trim() || sending}>{sending ? '正在投递…' : '开始分析'}</Button>
     </form>
     {feedback && <Notice>{feedback}</Notice>}
+    <nav className="fia-inline-actions" aria-label="工作流程快捷入口">
+      <Button variant="ghost" onClick={() => props.navigate('quotes')}>① 看行情与走势</Button>
+      <Button variant="ghost" onClick={() => props.navigate('advice')}>② 发起研究</Button>
+      <Button variant="ghost" onClick={() => props.navigate('research')}>③ 查资料与证据</Button>
+      <Button variant="ghost" onClick={() => props.navigate('journal')}>④ 复盘与确认</Button>
+    </nav>
     <div className="fia-metric-grid">
       <MetricCard label="我的资本" value={capitalText} detail={accountCount ? `已记录 ${capital.data?.events ?? '—'} 笔流水 · 净投入不等于收益` : '先建立账户或从持仓页面开始'} onClick={() => props.navigate(accountCount ? 'capital' : 'holdings')} />
-      <MetricCard label="中国市场" value={policy.error ? '资料暂不可用' : !policy.data ? '读取中' : policy.data.docs?.length ? '政策资料已就绪' : '等待研究资料'} detail="查看最近入库政策 · 原文与传导分开判断" onClick={() => props.navigate('policy')} />
+      <MetricCard label="政策资料" value={policy.error ? '资料暂不可用' : !policy.data ? '读取中' : policy.data.docs?.length ? '政策资料已就绪' : '等待研究资料'} detail="查看最近入库政策 · 原文与传导分开判断" onClick={() => props.navigate('policy')} />
       <MetricCard label="研究待办" value={resourceStatus(evidence, '暂无待补证据', waiting)} detail={waiting ? '补充关键资料，恢复原研究任务' : '缺少核心证据时，在这里补齐'} onClick={() => props.navigate('evidence')} />
       <MetricCard label="投资观点" value={resourceStatus(advice, '暂无到期复核', due)} detail={due ? '已到观察期，请重新核对失效条件' : advice.data?.stats?.total ? `已保存 ${advice.data.stats.total} 条判断` : '提出问题后，形成第一条研究观点'} onClick={() => props.navigate('advice')} />
     </div>
     <div className="fia-research-grid">
-      <Section title="政策与市场观察" meta={<Button variant="ghost" onClick={() => props.navigate('policy')}>全部政策 ↗</Button>}>
+      <Section title="市场速览" meta={<Button variant="ghost" onClick={() => props.navigate('quotes')}>行情与K线 →</Button>}>
+        {props.marketSummary ?? <p className="fia-muted">行情未取得，不用政策入库数量代替市场走势。</p>}
+      </Section>
+      <Section title="我的组合" meta={<Button variant="ghost" onClick={() => props.navigate('holdings')}>持仓与自选 →</Button>}>
+        {props.portfolioSummary ?? <p className="fia-muted">查看本地持仓及行情缺口。</p>}
+      </Section>
+    </div>
+    <div className="fia-research-grid">
+      <Section title="最近入库政策" meta={<Button variant="ghost" onClick={() => props.navigate('policy')}>全部政策 ↗</Button>}>
         {policy.error ? <Notice error>{policy.error}<Button onClick={() => void reloadPolicy()}>重试</Button></Notice> : !policy.data ? <p className="fia-muted" role="status">读取政策资料…</p> : !policy.data.docs?.length ? <EmptyState title="尚无政策资料" description="可通过对话采集官方文件，或导入已授权的材料。不会使用虚构的市场动态填满页面。" action={<Button onClick={() => props.navigate('policy')}>查看政策研究</Button>} /> : <div className="fia-timeline">{policy.data.docs.map(doc => <button key={doc.id} type="button" className="fia-timeline-item" onClick={() => props.onOpenPolicy(doc.id)}><span className="fia-timeline-date">{displayDay(doc.publishedAt)}<span>{doc.issuer ?? '来源待核实'}</span></span><strong>{doc.title}</strong><span className="fia-muted">查看原文与证据 →</span></button>)}</div>}
       </Section>
       <Section title="与我有关的研究" meta={<StatusBadge tone="neutral">本地记录</StatusBadge>}>
@@ -108,7 +122,8 @@ export function OverviewWorkbench(props: WorkbenchProps & { onOpenPolicy: (id: s
           <Button variant="ghost" onClick={() => props.navigate('evidence')}>打开证据待办</Button></div>
         <div className="fia-task-block"><h4>观点复核</h4><p className="fia-secondary">{advice.error ? advice.error : due ? `${due} 条建议已到复核时间` : '关注使判断成立或失效的新证据'}</p>
           {advice.data?.advices?.[0] && <p className="fia-last-question">最近：{advice.data.advices[0].userPrompt}</p>}
-          <Button variant="ghost" onClick={() => props.navigate('advice')}>查看投资判断</Button></div>
+          <Button variant="ghost" onClick={() => advice.data?.advices?.[0] ? props.onOpenAdvice(advice.data.advices[0].adviceId) : props.navigate('advice')}>查看最近判断</Button>
+          <Button variant="ghost" onClick={() => props.navigate('journal')}>档案、周复盘与待确认</Button></div>
         {warnings.length > 0 && <p className="fia-caution">资本记录存在缺口：{warnings.join('；')}</p>}
         {accountCount ? <details className="fia-source-details"><summary>资本口径说明</summary><p>以下仅为账本累计净投入，不是总资产、投资盈利或实时净值：</p>{Object.entries(capital.data?.netInvested ?? {}).map(([currency, amount]) => <div key={currency} className="fia-value-row"><span>{currency}</span><span className="fia-number">{formatMoney(amount, { currency })}</span></div>)}</details> : null}
       </Section>

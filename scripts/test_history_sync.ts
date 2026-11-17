@@ -153,4 +153,39 @@ await test('detectGaps ignores holiday-sized breaks and caps the list', () => {
   assert.equal(gaps.length, 1)
   assert.ok(gaps[0]!.weekdays >= 15)
 })
+await test('incremental basis conflict preserves the entire existing series', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sync-conflict-'))
+  try {
+    const store = new HistoryStore(dir)
+    await store.mergeKline('601988', 'a', [bar('2006-07-05', 3), bar('2026-11-16', 5)], { provider: 'em_kline', adjustment: 'qfq' })
+    const finance = { getKline: async () => ({ ok: true, provider: 'em_kline', data: [bar('2026-11-17', 15)] }), getFinancials: async () => ({ ok: true, data: [] }) }
+    const result = await syncHistory(finance as never, store, '601988', 'a', undefined, { since: '2026-11-10' })
+    assert.equal(result.ok, false)
+    assert.match(result.klineError!, /保留原历史/)
+    const after = await store.read('601988', 'a')
+    assert.equal(after!.adjustment, 'qfq')
+    assert.equal(after!.kline[0]!.date, '2006-07-05')
+    assert.equal(after!.kline.length, 2)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+await test('partial same-basis full response never truncates cached history', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sync-partial-'))
+  try {
+    const store = new HistoryStore(dir)
+    await store.mergeKline('601988', 'a', [bar('2006-07-05', 3), bar('2026-11-16', 5)], { provider: 'em_kline', adjustment: 'hfq' })
+    const finance = { getKline: async () => ({ ok: true, provider: 'em_kline', data: [bar('2026-11-17', 15)] }), getFinancials: async () => ({ ok: true, data: [] }) }
+    await syncHistory(finance as never, store, '601988', 'a')
+    assert.equal((await store.read('601988', 'a'))!.kline.length, 3)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+await test('same-day candles are refreshable and invalid dates are rejected', async () => {
+  const { shouldRefreshKline, klineRefreshSince } = await import('../src/client/kline-refresh.js')
+  assert.equal(shouldRefreshKline(100_000, 0), true)
+  assert.equal(shouldRefreshKline(100_000, 99_000), false)
+  assert.equal(shouldRefreshKline(100_000), true)
+  assert.equal(klineRefreshSince('2026-11-17'), '2026-11-12')
+  assert.equal(klineRefreshSince('2026-02-31'), undefined)
+})
 console.log(`[history-sync] ${passed} groups passed (offline).`)

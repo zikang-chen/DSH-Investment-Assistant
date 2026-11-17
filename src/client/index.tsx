@@ -4,6 +4,7 @@ import { OverviewWorkbench, InvestmentWorkbench } from './workbench.js'
 import { WORKSPACE_CSS } from './workspace-styles.js'
 import { FundWorkspace } from './fund-workspace.js'
 import { officialCollectPrompt, isCollectableUrl } from './policy-collect-model.js'
+import { shouldRefreshKline, klineRefreshSince } from './kline-refresh.js'
 import { CnDatasetsPanel } from './cn-datasets-panel.js'
 import { KlineChart } from './kline-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
@@ -1895,18 +1896,14 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
   const [hint, setHint] = useState('')
   const picks = [...props.data.holdings, ...props.data.watchlist].slice(0, 8)
   const autoSynced = useRef(new Set<string>())
-  /** Throttle: at most one auto/incremental sync per symbol every 10 minutes. */
   const lastSyncAt = useRef(new Map<string, number>())
-  const todayStr = () => new Date().toISOString().slice(0, 10)
-  const shiftDate = (day: string, delta: number) => new Date(new Date(`${day}T00:00:00Z`).getTime() + delta * 86_400_000).toISOString().slice(0, 10)
-  /** Keep the chart on the latest trading day: incremental sync when local data lags today. */
+  const syncing = useRef(new Set<string>())
   const refreshIfStale = async (c: string, k: string, newest: string) => {
-    if (!newest || newest >= todayStr()) return
+    const since = klineRefreshSince(newest)
+    if (!since || document.hidden) return
     const sig = `${k}:${c}`
-    const now = Date.now()
-    if (now - (lastSyncAt.current.get(sig) ?? 0) < 10 * 60_000) return
-    lastSyncAt.current.set(sig, now)
-    await sync(c, k, true, shiftDate(newest, -5))
+    if (syncing.current.has(sig) || !shouldRefreshKline(Date.now(), lastSyncAt.current.get(sig))) return
+    await sync(c, k, true, since)
   }
   const load = async (c: string, k: string) => {
     if (!c) return
@@ -1948,12 +1945,19 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
   const sync = async (cArg?: string, kArg?: string, silent = false, since?: string) => {
     const c = (cArg ?? code).trim(); const k = kArg ?? kind
     if (!c) { setHint('请输入代码'); return }
+    const sig = `${k}:${c}`
+    if (syncing.current.has(sig)) return
+    syncing.current.add(sig)
+    lastSyncAt.current.set(sig, Date.now())
+    const seq = requestSeq.current
     setBusy(true); if (!silent) setHint('')
     try {
       const r = await apiPost<{ ok: boolean; bars: number; addedBars: number; addedEvents: number; provider?: string; klineError?: string; pages?: number; truncatedAt?: string | null }>('/history/sync', { code: c, kind: k, ...(since ? { since } : {}) })
-      if (!silent) setHint(r.ok ? `同步完成：${r.bars} 根K线（新增 ${r.addedBars}），事件 +${r.addedEvents}｜${r.provider ?? ''}${r.truncatedAt ? `｜仅同步最近 ${r.pages ?? '?'} 页（至 ${r.truncatedAt}，更早待后续补齐）` : ''}` : `同步失败：${r.klineError ?? ''}`)
-      await load(c, k)
-    } catch { if (!silent) setHint('同步失败') } finally { setBusy(false) }
+      if (requestSeq.current !== seq) return // switched asset while sync was in flight
+      if (!r.ok || !silent) setHint(r.ok ? `同步完成：${r.bars} 根K线（新增 ${r.addedBars}），事件 +${r.addedEvents}｜${r.provider ?? ''}${r.truncatedAt ? `｜仅同步最近 ${r.pages ?? '?'} 页（至 ${r.truncatedAt}，更早待后续补齐）` : ''}` : `同步失败（保留原图）：${r.klineError ?? '未取得有效数据'}`)
+      if (r.ok) await load(c, k)
+    } catch (err) { if (requestSeq.current === seq) setHint(`同步失败（保留原图）：${errText(err)}`) }
+    finally { syncing.current.delete(sig); setBusy(false) }
   }
   // 停留在 K线页时每 90 秒检查最新交易日，落后就增量拉取（节流在 refreshIfStale 内）。
   useEffect(() => {
@@ -1995,20 +1999,21 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
             value: code,
             onChange: (e: { target: { value: string } }) => {
               const next = e.target.value
+              requestSeq.current++
               setCode(next)
               setKind(inferKlineKind(next))
               setHist(null); setManifest(null); setLoaded(null)
             },
             onKeyDown: onEnterCommit(() => void load(code.trim(), kind)),
           }),
-          h('select', { style: { ...S.input, width: 74, flex: '0 0 auto' }, value: kind, onChange: (e: { target: { value: string } }) => { setKind(e.target.value); setHist(null); setManifest(null); setLoaded(null) } },
+          h('select', { style: { ...S.input, width: 74, flex: '0 0 auto' }, value: kind, onChange: (e: { target: { value: string } }) => { requestSeq.current++; setKind(e.target.value); setHist(null); setManifest(null); setLoaded(null) } },
             h('option', { value: 'a' }, 'A股'), h('option', { value: 'hk' }, '港股'), h('option', { value: 'us' }, '美股'), h('option', { value: 'fund' }, '基金')),
           h('button', { style: S.btnPrimary, disabled: busy, onClick: () => void sync() }, busy ? '同步中…' : '同步'),
           h('button', { style: S.btn, onClick: () => void load(code.trim(), kind) }, '查看')),
         isStale ? h('div', { role: 'status', style: { ...S.muted, fontSize: 11, color: WARNING, lineHeight: 1.6 } },
           `本地数据截至 ${lastBarDate}（约 ${staleDays} 天前），可能已过期；点「同步」拉取最新，缩到最左可看最早历史。`) : null,
         hist && hist.kline.length ? h('div', { style: { ...S.muted, fontSize: 11 } },
-          `本地 ${hist.kline.length} 根 · ${String(hist.kline[0]!.date).slice(0, 10)} → ${lastBarDate}${lastBarDate === new Date().toISOString().slice(0, 10) ? ' · 已是最新交易日' : ''}`,
+          `本地 ${hist.kline.length} 根 · ${String(hist.kline[0]!.date).slice(0, 10)} → ${lastBarDate}${lastBarDate === new Date().toISOString().slice(0, 10) ? ' · 含当日K线（可能未收盘，非实时成交）' : ''}`,
           ' · 停留本页会自动增量更新') : null,
         picks.length ? h('div', { style: { display: 'flex', gap: 5, flexWrap: 'wrap' } }, picks.map((p) => h('button', {
           key: keyOf(p.code, p.type ?? 'stock'),
@@ -2023,7 +2028,7 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
         hint ? h('div', { style: { ...S.muted, fontSize: 11 } }, hint) : null,
         manifest ? h('div', { style: { ...S.muted, fontSize: 11 } },
           `数据边界：${manifest.coverage?.from ?? '—'} → ${manifest.coverage?.to ?? '—'}（${manifest.bars} 根 · ${manifest.events} 事件）· 内容哈希 ${manifest.contentHash.slice(0, 8)}`
-          + (manifest.gaps.length ? `｜缺口 ${manifest.gaps.map((g) => `${g.from}~${g.to} 间缺 ${g.weekdays} 个交易日`).join('、')}` : '｜无缺口')
+          + (manifest.gaps.length ? `｜疑似长间隔 ${manifest.gaps.map((g) => `${g.from}~${g.to} 间隔 ${g.weekdays} 个工作日`).join('、')}（未扣法定休市/停牌，非确定缺失）` : '｜未发现长间隔（不等于完整性已核验）')
           + (manifest.eventsMissingAvailableAt ? `｜${manifest.eventsMissingAvailableAt} 财报事件可得日缺失（不可作回测证据）` : '')) : null)),
     hist && hist.kline.length >= 1
       ? h('div', { style: S.group },
@@ -3835,18 +3840,18 @@ function PolicyView(props: { deliver: (text: string) => void; focus?: string }) 
 /** 五个一级入口：总览 / 投资判断 / 市场研究 / 我的资本 / 设置（细节放在组内 Tab）。 */
 const TAB_GROUPS = [
   { id: 'overview', label: '总览', items: [
-    { id: 'home', label: '首页' }, { id: 'evidence', label: '待办' },
+    { id: 'home', label: '工作台' }, { id: 'evidence', label: '证据待办' },
   ] },
   { id: 'judgement', label: '投资判断', items: [
-    { id: 'advice', label: '判断' },
+    { id: 'advice', label: '研究判断' }, { id: 'journal', label: '档案与复盘' },
   ] },
   { id: 'market', label: '市场研究', items: [
     { id: 'quotes', label: '行情' }, { id: 'macro', label: '宏观' }, { id: 'policy', label: '政策' },
-    { id: 'news', label: '快讯' }, { id: 'dossier', label: '深度' }, { id: 'discover', label: '发现' },
-    { id: 'research', label: '资料' }, { id: 'learn', label: '学习' },
+    { id: 'news', label: '新闻' }, { id: 'dossier', label: '证券档案' }, { id: 'discover', label: '筛选发现' },
+    { id: 'funds', label: '基金研究' }, { id: 'follow', label: '机构追踪' }, { id: 'research', label: '资料库' },
   ] },
   { id: 'capital', label: '我的资本', items: [
-    { id: 'holdings', label: '持仓' }, { id: 'capital', label: '资本' }, { id: 'wealth', label: '规划' }, { id: 'funds', label: '基金' }, { id: 'follow', label: '追踪' },
+    { id: 'holdings', label: '持仓与自选' }, { id: 'capital', label: '账户与收益' }, { id: 'wealth', label: '规划与目标' }, { id: 'learn', label: '金融学习' },
   ] },
   { id: 'settings', label: '设置', items: [
     { id: 'sources', label: '数据源' }, { id: 'skills', label: '技能' }, { id: 'health', label: '接口' },
@@ -3950,27 +3955,30 @@ function PanelBody(props: {
   const [adviceSelection, setAdviceSelection] = useState('')
   const [klineTarget, setKlineTarget] = useState<{ code: string; kind: string; at: number } | undefined>()
   const [securityReturnTab, setSecurityReturnTab] = useState('quotes')
+  const [chartFromDossier, setChartFromDossier] = useState(false)
   /** 录入草稿由面板持有：去档案/分析后返回仍能续填，避免数量与成本被重置。 */
   const [holdingDraft, setHoldingDraft] = useState<HoldingEntryDraft>(() => emptyHoldingDraft())
   /** 数据源页有未保存草稿时，切走前显式确认，不能静默丢弃。 */
   const [sourcesDirty, setSourcesDirty] = useState(false)
-  const selectTab = (id: string) => {
-    if (id !== tab && tab === 'sources' && sourcesDirty && !window.confirm('数据源页有未保存的草稿，离开将丢失。仍要离开？')) return
-    if (id === 'dossier' && tab !== 'dossier') setSecurityReturnTab(tab)
+  const selectTab = useCallback((id: string, preserveReturn = false): boolean => {
+    if (!TABS.some(t => t.id === id)) return false
+    if (id !== tab && tab === 'sources' && sourcesDirty && !window.confirm('数据源页有未保存的草稿，离开将丢失。仍要离开？')) return false
+    if (id === 'dossier' && tab !== 'dossier' && !preserveReturn) setSecurityReturnTab(tab)
+    if (id !== 'quotes' && id !== 'dossier') setChartFromDossier(false)
     setTab(id); try { window.localStorage.setItem(TAB_KEY, id) } catch { /* */ }
-  }
+    return true
+  }, [tab, sourcesDirty])
   const [dossierTarget, setDossierTarget] = useState<{ code: string; name?: string; type?: 'stock' | 'fund'; secid?: string; market?: string; at: number } | undefined>()
   useEffect(() => {
     const openSecurity = (event: Event) => {
       const item = (event as CustomEvent<SecurityIdentity>).detail
       if (!item || !item.code?.trim() || !['stock', 'fund'].includes(item.type)) return
-      if (tab !== 'dossier') setSecurityReturnTab(tab)
+      if (!selectTab('dossier')) return
       setDossierTarget({ ...item, at: Date.now() })
-      selectTab('dossier')
     }
     window.addEventListener(SECURITY_OPEN_EVENT, openSecurity)
     return () => window.removeEventListener(SECURITY_OPEN_EVENT, openSecurity)
-  }, [tab])
+  }, [selectTab])
   // 对话侧落库的即时回执：Agent 存了资料/写了成长档案/说明导航意图时在任何 tab 都能看到。
   const [agentSaved, setAgentSaved] = useState<{ text: string; at: number; tab?: string } | undefined>()
   useEffect(() => {
@@ -4060,8 +4068,10 @@ function PanelBody(props: {
       seenPanelCommands.add(cmd.commandId)
       if (seenPanelCommands.size > 200) seenPanelCommands.clear()
     }
-    if (cmd.tab === 'kline' || cmd.tab === 'market') selectTab('quotes') // 兼容别名：K线/市场页已并入「行情」
-    else if (TABS.some((t) => t.id === cmd.tab)) selectTab(cmd.tab)
+    const destination = cmd.tab === 'home' && cmd.anchor && ['growth', 'journal', 'reviews', 'approvals'].includes(cmd.anchor)
+      ? (cmd.anchor === 'growth' ? 'wealth' : 'journal')
+      : cmd.tab === 'kline' || cmd.tab === 'market' ? 'quotes' : cmd.tab
+    if (!selectTab(destination)) return // cancelled navigation must have zero target/analysis side effects
     if ((cmd.tab === 'kline' || cmd.tab === 'market' || cmd.tab === 'quotes') && cmd.code) {
       setKlineTarget({ code: cmd.code, kind: cmd.kind ?? (cmd.type === 'fund' ? 'fund' : inferKlineKind(cmd.code, cmd.type as AssetType | undefined)), at: Date.now() })
     }
@@ -4073,7 +4083,7 @@ function PanelBody(props: {
     }
     // Agent → 面板：一句话解释（用户知道为什么被引导过来）+ 页内锚点滚动。
     if (cmd.note) setAgentSaved({ text: cmd.note, at: Date.now(), tab: TABS.some((t) => t.id === cmd.tab) ? cmd.tab : undefined })
-    if (cmd.anchor) emitPanelAnchor(cmd.tab, cmd.anchor)
+    if (cmd.anchor) emitPanelAnchor(destination, cmd.anchor)
   })
 
   // Stable identity for child effects: otherwise every parent render (e.g. the 10s
@@ -4198,17 +4208,23 @@ function PanelBody(props: {
       h('button', { style: { ...S.btn, padding: '2px 6px' }, onClick: () => setAgentSaved(undefined) }, '×')) : null,
     h(SessionPicker, null),
     h('div', { className: 'fia-panel-content' },
-      tab === 'home' ? h('div', null,
-        h(OverviewWorkbench, { navigate: selectTab, deliver: deliverToChat, get: apiGet, useBus, onOpenPolicy: (id: string) => { setPolicyFocus(id); selectTab('policy') } }),
-        h(PersonalHome, { embedded: true, deliver: deliverToChat, navigate: selectTab, useBus, openReminders: () => { setBellOpen(true); void loadReminders() } }),
-      ) : null,
+      tab === 'home' ? h(OverviewWorkbench, { navigate: selectTab, deliver: deliverToChat, get: apiGet, useBus,
+        marketSummary: data.indices.length ? h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } }, data.indices.slice(0, 3).map(ix => h(IndexCard, { key: ix.code, ix }))) : h('p', { style: S.muted }, '暂无可用指数行情；打开行情页重试。'),
+        portfolioSummary: h('div', null,
+          h('p', null, `${data.holdings.length} 项持仓 · ${data.watchlist.length} 项自选`),
+          h('p', { style: S.muted }, '持仓快照不等于账户净资产，未取得可靠价格/汇率时不合并收益。'),
+          h('button', { style: S.btn, onClick: () => selectTab('capital') }, '查看账户与真实收益 →')),
+        onOpenAdvice: (id: string) => { if (selectTab('advice')) setAdviceSelection(id) },
+        onOpenPolicy: (id: string) => { if (selectTab('policy')) setPolicyFocus(id) } }) : null,
+      tab === 'journal' ? h(PersonalHome, { embedded: true, deliver: deliverToChat, navigate: selectTab, useBus, openReminders: () => { setBellOpen(true); void loadReminders() } }) : null,
+      tab === 'quotes' && chartFromDossier ? h('button', { style: S.btn, onClick: () => { if (selectTab('dossier', true)) setChartFromDossier(false) } }, '← 返回证券档案') : null,
       tab === 'quotes' ? h(QuotesView, {
         data, quoteBy, loading, mutate, onOpen: props.onOpenAnalysis, onRefresh: () => void loadLive(),
         onSelectKline: (code, type) => setKlineTarget({ code, kind: inferKlineKind(code, type), at: Date.now() }),
         klineTarget,
       }) : null,
       tab === 'holdings' ? h(HoldingsView, { data, quoteBy, mutate, onOpen: props.onOpenAnalysis, holdingDraft, onHoldingDraftChange: setHoldingDraft }) : null,
-      tab === 'funds' ? h(FundWorkspace, { get: apiGet, active: tab === 'funds', onOpenFund: (item) => { setSecurityReturnTab('funds'); setDossierTarget({ ...item, at: Date.now() }); selectTab('dossier') } }) : null,
+      tab === 'funds' ? h(FundWorkspace, { get: apiGet, active: tab === 'funds', onOpenFund: (item) => { if (!selectTab('dossier')) return; setSecurityReturnTab('funds'); setDossierTarget({ ...item, at: Date.now() }) } }) : null,
       tab === 'macro' ? h(MacroView, { active: tab === 'macro' }) : null,
       tab === 'policy' ? h(PolicyView, { deliver: deliverToChat, focus: policyFocus }) : null,
       tab === 'news' ? h(NewsView, { active: tab === 'news', data, quoteBy }) : null,
@@ -4223,7 +4239,9 @@ function PanelBody(props: {
         onOpenPolicy: (id: string) => { setPolicyFocus(id); selectTab('policy') },
       }) : null,
       tab === 'capital' ? h(CapitalWorkspace, { get: apiGet, deliver: deliverToChat, useBus, portfolio: portfolioSnapshot }) : null,
-      tab === 'wealth' ? h(WealthWorkspace, { get: apiGet, post: apiPost, portfolio: portfolioSnapshot }) : null,
+      tab === 'wealth' ? h('div', null,
+        h(PersonalHome, { embedded: true, planningOnly: true, deliver: deliverToChat, navigate: selectTab, useBus }),
+        h(WealthWorkspace, { get: apiGet, post: apiPost, portfolio: portfolioSnapshot })) : null,
       tab === 'dossier' ? h(SecurityWorkspace, {
         key: `${dossierTarget?.type ?? (klineTarget?.kind === 'fund' ? 'fund' : 'stock')}:${dossierTarget?.code ?? klineTarget?.code ?? 'empty'}`,
         get: apiGet, deliver: deliverToChat,
@@ -4233,7 +4251,7 @@ function PanelBody(props: {
         requested: dossierTarget ? { ...dossierTarget, type: dossierTarget.type ?? 'stock' } : undefined,
         onSelect: (item) => setDossierTarget({ ...item, at: Date.now() }),
         onBack: () => selectTab(securityReturnTab),
-        onChart: (item) => { setKlineTarget({ code: item.code, kind: inferKlineKind(item.code, item.type), at: Date.now() }); selectTab('quotes') },
+        onChart: (item) => { if (!selectTab('quotes')) return; setChartFromDossier(true); setKlineTarget({ code: item.code, kind: inferKlineKind(item.code, item.type), at: Date.now() }) },
       }) : null,
       tab === 'discover' ? h(DiscoverView, null) : null,
       tab === 'follow' ? h(FollowView, null) : null,

@@ -163,16 +163,32 @@ async function rawFetch(url: string, opts: FetchOptions): Promise<RawResponse> {
   const onAbort = (): void => ctrl.abort(opts.signal?.reason ?? new Error('aborted'))
   opts.signal?.addEventListener('abort', onAbort, { once: true })
   try {
-    const res = await fetch(url, {
-      redirect: 'follow',
-      signal: ctrl.signal,
-      headers: {
-        'User-Agent': policyUserAgent(),
-        Accept: 'text/html,application/xhtml+xml,application/xml,text/plain,application/pdf,*/*',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
-        ...opts.headers,
-      },
-    })
+    let target = url
+    let res: Response
+    for (let hop = 0; ; hop++) {
+      // Validate BEFORE sending each request; redirect:'follow' would contact an
+      // off-allowlist host before the old final-URL check could reject it.
+      if (!hostAllowed(target, opts.hosts)) throw new PolicyFetchError(`重定向到允许清单外的主机：${target}`, 'not-allowlisted')
+      res = await fetch(target, {
+        redirect: 'manual', signal: ctrl.signal,
+        headers: {
+          'User-Agent': policyUserAgent(),
+          Accept: 'text/html,application/xhtml+xml,application/xml,text/plain,application/pdf,*/*',
+          'Accept-Language': 'zh-CN,zh;q=0.9', ...opts.headers,
+        },
+      })
+      if (![301, 302, 303, 307, 308].includes(res.status)) break
+      const location = res.headers.get('location')
+      await res.body?.cancel().catch(() => {})
+      if (!location || hop >= 5) throw new PolicyFetchError('重定向过多或缺少 Location', 'http-error')
+      target = new URL(location, target).toString()
+      if (!hostAllowed(target, opts.hosts)) throw new PolicyFetchError(`重定向到允许清单外的主机：${target}`, 'not-allowlisted')
+      if (opts.respectRobots !== false) {
+        const next = new URL(target)
+        const rules = await loadRobots(next.origin, opts)
+        if (rules && !robotsAllows(rules, `${next.pathname}${next.search}`)) throw new PolicyFetchError('robots.txt 不允许重定向目标', 'robots-disallowed')
+      }
+    }
     if (!hostAllowed(res.url, opts.hosts)) {
       throw new PolicyFetchError(`重定向到允许清单外的主机：${res.url}`, 'not-allowlisted')
     }

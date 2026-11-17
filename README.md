@@ -31,6 +31,27 @@
 
 ---
 
+## 当前版本使用说明（2026-11-17）
+
+- **K 线**：本地历史支持全览、周期聚合、事件与增量更新；已修复口径冲突时局部数据覆盖多年历史的风险。全球指数K线当前最多500根，不能称为所有市场上市以来全量。
+- **新鲜度**：可见本地K线页每90秒检查刷新，当日蜡烛也可更新；仍受Provider缓存/上游延迟影响，**不是逐笔实时行情**。
+- **官方资料**：`policy_collect_official`支持公开列表翻页、发布日区间回溯、文章子页附件发现；失败/重复也计预算，失败明确报告。动态JS、登录/验证码页面不保证自动采集。
+- **中国免费数据**：`list_cn_datasets` / `get_cn_dataset`使用可选Python桥；先看数据集是否可用、统计期与单位，未配置Python或上游失败须明确显示。
+- **安全与升级**：本地数据与私人密钥不提交；新代码构建后需重载插件服务端，单纯刷新浏览器不保证服务端更新。
+
+### 完整文档入口
+
+| 文档 | 内容 |
+|---|---|
+| [完整使用与维护手册](<docs/complete-guide.md>) | 安装、研究工作流、数据、更新、限制和排障总入口 |
+| [页面跳转与内容分工](<docs/product-navigation.md>) | 总览精简、规划归位、证券返回与草稿保护 |
+| [K线与事件说明](<docs/history-kline.md>) | 覆盖、口径、刷新、缓存保护与缺口解释 |
+| [政策采集与历史回溯](<docs/policy-collection.md>) | 参数、附件、日期、更新与合规边界 |
+| [数据源审计矩阵](<docs/data-source-audit.md>) | 已有源、实测证据与缺口 |
+| [中国免费数据集](<docs/free-cn-datasets.md>) | 数据集与接口清单 |
+| [可靠性审查](<docs/bug-audit-2026-11-17.md>) | 本轮修复、测试与残余限制 |
+| [Windows运行说明](<docs/windows-powershell-fix.md>) | 编码、JSON、脚本参数处理 |
+
 ## 二、安装（5 分钟）
 
 ### 前置
@@ -166,7 +187,7 @@ Agent 会：查行情时效 → 政策/宏观/估值取证 → **主动找反对
 
 ## 六、数据与隐私
 
-- 所有运行数据默认在仓库外的 `data/`（已 gitignore）：持仓、流水、政策库、证据、资料、学习进度、建议记录。
+- 运行数据默认在插件目录的 `data/`（私人运行文件由gitignore排除，也可配置dataDir迁移）：持仓、流水、政策库、证据、资料、学习进度、建议记录。目录在本机磁盘上，不等于已提交到仓库。
 - 仓库不包含真实持仓、交易记录、研究资料、API Key、对话记录。
 - 不采集账号、密码、验证码、身份证号；`provider` 只写平台名称。
 - 抓取类功能遵守 robots、体积与频率限制；**不绕过**登录、验证码、付费墙。
@@ -182,9 +203,12 @@ Agent 会：查行情时效 → 政策/宏观/估值取证 → **主动找反对
 npm run build
 npm run test:policy        # 政策：46 项
 npm run test:evidence      # 证据协作：13 项
-npm run test:capital       # 资本账本：17 项
+npm run test:capital       # 资本账本：21 项
 npm run test:wealth        # 复利：19 项
-npm run test:investment    # 投资判断：15 项
+npm run test:investment    # 投资判断：23 项
+npm run test:history-sync  # 历史缓存、复权、增量保护
+npm run test:kline-math    # 聚合、事件、全览视窗
+npm run test:policy-official # 官方页面行为与重定向约束
 npm run test:learn         # 金融学习：14 项
 npm run test:regressions   # 跨模块回归：19 组
 npm run test:quant         # 量化金样本：28 项
