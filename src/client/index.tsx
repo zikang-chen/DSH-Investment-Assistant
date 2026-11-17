@@ -1165,7 +1165,7 @@ function GlobalIndicesPanel() {
     setOpenIndex(row.secid); setIndexBars(undefined)
     const seq = ++indexSeq.current
     try {
-      const r = await apiGet<{ ok?: boolean; bars?: HistBar[]; error?: string }>(`/global/kline?secid=${encodeURIComponent(row.secid)}&limit=180`)
+      const r = await apiGet<{ ok?: boolean; bars?: HistBar[]; error?: string }>(`/global/kline?secid=${encodeURIComponent(row.secid)}&limit=500`)
       if (indexSeq.current !== seq) return
       setIndexBars({ secid: row.secid, bars: r.ok === false ? [] : r.bars ?? [], error: r.ok === false ? (r.error || 'K线读取失败') : undefined })
     } catch (err) { if (indexSeq.current === seq) setIndexBars({ secid: row.secid, bars: [], error: errText(err) }) }
@@ -1217,7 +1217,7 @@ function GlobalIndicesPanel() {
                   h('span', { style: { ...S.muted, fontSize: 10 } }, `${row.region ?? region}${row.asOf ? ` · ${row.asOf}` : ''} · 东财${active ? ' · 收起' : ' · 看K线'}`))
               })),
       openRow ? h('div', { style: { borderTop: `1px solid ${R.line}`, paddingTop: 8 } },
-        h('div', { style: { ...S.title, marginBottom: 6 } }, `${openRow.name} · 日K`),
+        h('div', { style: { ...S.title, marginBottom: 6 } }, `${openRow.name} · 日K${indexBars?.bars?.length ? ` · ${indexBars.bars.length} 根（${String(indexBars.bars[0]!.date).slice(0, 10)} → ${String(indexBars.bars[indexBars.bars.length - 1]!.date).slice(0, 10)}）` : ''}`),
         indexBars?.secid === openRow.secid
           ? (indexBars.error ? h('div', { role: 'alert', style: { ...S.muted, color: DANGER, fontSize: 12 } }, indexBars.error) : indexBars.bars.length ? h(KlineChart, { bars: indexBars.bars, title: `${openRow.name} 日K`, height: 280 }) : h('div', { style: S.muted }, '暂无K线数据。'))
           : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 140 }))) : null,

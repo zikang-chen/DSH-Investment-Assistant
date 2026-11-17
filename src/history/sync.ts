@@ -13,14 +13,16 @@ export function inferSymbolKind(code: string, kind: SymbolKind): SymbolKind {
 }
 
 /**
- * 记录本次抓取实际请求的复权口径：东财/腾讯日线在代码里显式默认 qfq；
- * WeStock CLI 未带复权参数、默认口径未验证 → unknown（不进正式回测）；
- * 基金净值序列视为 none（单位净值）。
+ * 记录本次抓取实际请求的复权口径。
+ * 历史长序列统一用「后复权(hfq)」：前复权(qfq)在长期分红股上会把早期价格调成 0 或负数，
+ * 这些 bar 会被校验丢弃，表现为“早期大量缺口”。hfq 价格恒正、且保留总回报。
  */
-export function requestedAdjustment(provider: string | undefined, kind: SymbolKind): HistoryAdjustment {
+export function requestedAdjustment(provider: string | undefined, kind: SymbolKind, requested: 'qfq' | 'hfq' | '' = 'hfq'): HistoryAdjustment {
   if (kind === 'fund') return 'none'
   if (provider?.startsWith('ws_')) return 'unknown'
-  if (provider?.startsWith('em_') || provider?.startsWith('tx_')) return 'qfq'
+  if (provider?.startsWith('em_') || provider?.startsWith('tx_')) {
+    return requested === 'hfq' ? 'hfq' : requested === '' ? 'none' : 'qfq'
+  }
   return 'unknown'
 }
 
@@ -142,17 +144,18 @@ export async function syncHistory(
     klineProvider = klineRes.provider
     klineError = klineRes.ok ? undefined : klineRes.error
   } else {
+    const ADJUST: 'qfq' | 'hfq' | '' = 'hfq'
     const fetchPage = (end: string | undefined): Promise<KlinePage> => {
       if (options.since) {
         // 增量更新：只从「本地最后一根前 5 天」往后取，避免每次刷新都拉全部历史。
-        return resolvedKind === 'hk' ? finance.getHkKline(code, 'daily', options.since, end, signal, PAGE_DAYS)
-          : resolvedKind === 'us' ? finance.getUsKline(code, 'daily', options.since, end, signal, PAGE_DAYS)
-            : finance.getKline(code, 'daily', options.since, end, signal, PAGE_DAYS) as Promise<KlinePage>
+        return resolvedKind === 'hk' ? finance.getHkKline(code, 'daily', options.since, end, signal, PAGE_DAYS, ADJUST)
+          : resolvedKind === 'us' ? finance.getUsKline(code, 'daily', options.since, end, signal, PAGE_DAYS, ADJUST)
+            : finance.getKline(code, 'daily', options.since, end, signal, PAGE_DAYS, ADJUST) as Promise<KlinePage>
       }
-      return resolvedKind === 'hk' ? finance.getHkKline(code, 'daily', undefined, end, signal, PAGE_DAYS)
-        : resolvedKind === 'us' ? finance.getUsKline(code, 'daily', undefined, end, signal, PAGE_DAYS)
+      return resolvedKind === 'hk' ? finance.getHkKline(code, 'daily', undefined, end, signal, PAGE_DAYS, ADJUST)
+        : resolvedKind === 'us' ? finance.getUsKline(code, 'daily', undefined, end, signal, PAGE_DAYS, ADJUST)
           // A 股：显式从 1990 年起取，才能覆盖到上市首日（此前用 days=60 只落 3 个月）
-          : finance.getKline(code, 'daily', '1990-01-01', end, signal, PAGE_DAYS) as Promise<KlinePage>
+          : finance.getKline(code, 'daily', '1990-01-01', end, signal, PAGE_DAYS, ADJUST) as Promise<KlinePage>
     }
     const paged = await fetchKlinePaged(resolvedKind, fetchPage, options.maxPages ?? (options.since ? 1 : undefined))
     bars = paged.bars
@@ -161,10 +164,23 @@ export async function syncHistory(
     klineError = paged.error
     truncatedAt = paged.truncatedAt
   }
-  const adjustment = requestedAdjustment(klineProvider, resolvedKind)
-  const merged = bars.length
-    ? await store.mergeKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
-    : { added: 0, rejected: 0 }
+  const adjustment = requestedAdjustment(klineProvider, resolvedKind, 'hfq')
+  let merged: { added: number; rejected: number } = { added: 0, rejected: 0 }
+  if (bars.length) {
+    // 全量拉取 = 以本次结果为准（顺带把旧 qfq 稀疏序列升级为 hfq）；
+    // 增量拉取 = 合并追加；若口径冲突（旧 qfq 文件）则整体替换，不让两套口径混在一起。
+    if (!options.since) {
+      merged = await store.replaceKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
+    } else {
+      try {
+        merged = await store.mergeKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
+      } catch (err) {
+        if (/复权口径不一致/.test(err instanceof Error ? err.message : String(err))) {
+          merged = await store.replaceKline(code, resolvedKind, bars, { provider: klineProvider, adjustment })
+        } else throw err
+      }
+    }
+  }
 
   const events: MarketEvent[] = []
   if (resolvedKind !== 'fund') {

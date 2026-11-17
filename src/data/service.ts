@@ -176,8 +176,9 @@ export class FinanceDataService {
     end?: string,
     signal?: AbortSignal,
     days = 60,
+    adjust: 'qfq' | 'hfq' | '' = 'qfq',
   ) {
-    return this.registry.call<KlineBar[]>('kline', { code, period, start, end, days }, signal)
+    return this.registry.call<KlineBar[]>('kline', { code, period, start, end, days, adjust }, signal)
   }
 
   async getMarketOverview(signal?: AbortSignal) {
@@ -212,16 +213,16 @@ export class FinanceDataService {
     return this.registry.call<StockQuote>('us_quote', { code }, signal)
   }
 
-  async getUsKline(code: string, period = 'daily', start?: string, end?: string, signal?: AbortSignal, days = 120) {
-    return this.registry.call<KlineBar[]>('us_kline', { code, period, start, end, days }, signal)
+  async getUsKline(code: string, period = 'daily', start?: string, end?: string, signal?: AbortSignal, days = 120, adjust: 'qfq' | 'hfq' | '' = 'qfq') {
+    return this.registry.call<KlineBar[]>('us_kline', { code, period, start, end, days, adjust }, signal)
   }
 
   async getHkQuote(code: string, signal?: AbortSignal) {
     return this.registry.call<StockQuote>('hk_quote', { code }, signal)
   }
 
-  async getHkKline(code: string, period = 'daily', start?: string, end?: string, signal?: AbortSignal, days = 120) {
-    return this.registry.call<KlineBar[]>('hk_kline', { code, period, start, end, days }, signal)
+  async getHkKline(code: string, period = 'daily', start?: string, end?: string, signal?: AbortSignal, days = 120, adjust: 'qfq' | 'hfq' | '' = 'qfq') {
+    return this.registry.call<KlineBar[]>('hk_kline', { code, period, start, end, days, adjust }, signal)
   }
 
   async getHkList(signal?: AbortSignal) {

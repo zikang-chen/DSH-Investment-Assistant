@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fetchKlinePaged, syncHistory } from '../src/history/sync.js'
-import { HistoryStore } from '../src/history/store.js'
+import { fetchKlinePaged, syncHistory, requestedAdjustment } from '../src/history/sync.js'
+import { HistoryStore, detectGaps } from '../src/history/store.js'
 
 let passed = 0
 const test = async (name: string, fn: () => Promise<void>) => { await fn(); passed++; console.log(`PASS ${name}`) }
@@ -100,5 +100,57 @@ await test('incremental sync only asks from the given date and stops after one p
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+await test('long history uses hfq so early adjusted prices are not dropped', async () => {
+  assert.equal(requestedAdjustment('em_kline', 'a', 'hfq'), 'hfq')
+  assert.equal(requestedAdjustment('em_kline', 'a', 'qfq'), 'qfq')
+  assert.equal(requestedAdjustment('em_kline', 'a', ''), 'none')
+  assert.equal(requestedAdjustment('ws_quotes', 'a', 'hfq'), 'unknown')
+  assert.equal(requestedAdjustment('em_kline', 'fund', 'hfq'), 'none')
+  let capturedAdjust: string | undefined
+  const finance = {
+    getKline: async (_c: string, _p: string, _s?: string, _e?: string, _sig?: unknown, _days?: number, adjust?: string) => {
+      capturedAdjust = adjust
+      return { ok: true, provider: 'em_kline', data: [bar('2026-11-17', 5)] }
+    },
+    getFinancials: async () => ({ ok: true, data: [] }),
+  }
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sync-hfq-'))
+  try {
+    const store = new HistoryStore(dir)
+    await syncHistory(finance as never, store, '601988', 'a')
+    assert.equal(capturedAdjust, 'hfq', '全量同步必须请求后复权，避免早期 qfq 变成 0/负价被丢弃')
+    const series = await store.read('601988', 'a')
+    assert.equal(series?.adjustment, 'hfq')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+await test('replaceKline upgrades a sparse qfq series and keeps events', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'replace-'))
+  try {
+    const store = new HistoryStore(dir)
+    await store.mergeKline('601988', 'a', [bar('2026-11-17', 10), { date: '2026-11-16', open: 0, high: 0, low: 0, close: 0, volume: 1 }], { provider: 'em_kline', adjustment: 'qfq' })
+    await store.mergeEvents('601988', 'a', [{ date: '2026-09-30', type: '财报', label: '2026三季报' }])
+    const full = Array.from({ length: 50 }, (_, i) => bar(new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10), 5 + i))
+    const res = await store.replaceKline('601988', 'a', full, { provider: 'em_kline', adjustment: 'hfq' })
+    const series = await store.read('601988', 'a')
+    assert.equal(series?.adjustment, 'hfq')
+    assert.equal(series?.kline.length, 50)
+    assert.equal(series?.events.length, 1, '替换K线不得丢掉事件')
+    assert.equal(res.rejected, 0)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+await test('detectGaps ignores holiday-sized breaks and caps the list', () => {
+  const mk = (dates: string[]) => dates.map((d) => bar(d, 10))
+  // 间隔 4 个工作日（春节级）不应报；间隔 40 个工作日应报。
+  const bars = mk(['2026-01-05', '2026-01-09', '2026-03-02'])
+  const gaps = detectGaps(bars)
+  assert.equal(gaps.length, 1)
+  assert.ok(gaps[0]!.weekdays >= 15)
 })
 console.log(`[history-sync] ${passed} groups passed (offline).`)

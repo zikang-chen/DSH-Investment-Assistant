@@ -78,7 +78,7 @@ export interface HistoryGap {
  * 相邻 bar 之间缺席工作日 ≥ minWeekdayGap 的区间标为疑似缺口。
  * A 股长假（春节/国庆）会自然出现，因此只标注、不判定原因，供准入检查人工解释。
  */
-export function detectGaps(bars: KlineBar[], minWeekdayGap = 2): HistoryGap[] {
+export function detectGaps(bars: KlineBar[], minWeekdayGap = 15, maxGaps = 10): HistoryGap[] {
   const gaps: HistoryGap[] = []
   for (let i = 1; i < bars.length; i++) {
     const from = bars[i - 1]!.date
@@ -93,7 +93,8 @@ export function detectGaps(bars: KlineBar[], minWeekdayGap = 2): HistoryGap[] {
     }
     if (weekdays >= minWeekdayGap) gaps.push({ from, to, weekdays })
   }
-  return gaps
+  // 只报告最显著的缺口（默认≥15 个工作日），避免把法定节假日误报成数据缺失。
+  return gaps.sort((a, b) => b.weekdays - a.weekdays).slice(0, maxGaps)
 }
 
 export interface HistoryManifest {
@@ -349,6 +350,32 @@ export class HistoryStore {
       await this.write(series, legacy)
       if (rejected) this.logger?.warn('history merge rejected invalid bars', { code, kind, rejected })
       return { added: byDate.size - before, rejected }
+    })
+  }
+
+  /**
+   * Replace a whole kline series (used when the adjustment basis changes, e.g. qfq → hfq,
+   * or when a full-history refetch supersedes sparse legacy bars). Events are preserved;
+   * invalid bars are dropped and reported, never coerced.
+   */
+  async replaceKline(code: string, kind: string, bars: KlineBar[], meta: HistoryMetaInput = {}): Promise<MergeResult> {
+    return this.run(async () => {
+      const { series, legacy } = await this.loadSeries(code, kind)
+      const byDate = new Map<string, KlineBar>()
+      let rejected = 0
+      for (const b of bars) {
+        if (!validBar(b)) { rejected++; continue }
+        byDate.set(b.date, b)
+      }
+      series.kline = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date))
+      series.kind = kind
+      series.adjustment = meta.adjustment ?? series.adjustment ?? 'unknown'
+      if (meta.provider) series.provider = meta.provider
+      series.fetchedAt = meta.fetchedAt ?? new Date().toISOString()
+      series.updatedAt = new Date().toISOString()
+      await this.write(series, legacy)
+      if (rejected) this.logger?.warn('history replace rejected invalid bars', { code, kind, rejected })
+      return { added: series.kline.length, rejected }
     })
   }
 
