@@ -10,6 +10,7 @@ import { buildStockDossier } from '../data/dossier.js'
 import { buildFundDossier } from '../data/fund-dossier.js'
 import { GLOBAL_MACRO_SERIES_KEYS } from '../data/global-macro.js'
 import { fetchAndBuildGlobalNewsRadar } from '../news/global-radar.js'
+import { fetchGlobalQuote, fetchGlobalKline } from '../data/global-quotes.js'
 import { dossierToolResult } from './dossier-data.js'
 import {
   compareFunds,
@@ -684,6 +685,57 @@ export function registerTools(ctx: Context, finance: FinanceDataService, store: 
         feedDiagnostics: run.radar.feedDiagnostics,
         disclaimer: run.radar.disclaimer,
       })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'get_global_quote',
+    description: '海外个股/指数/黄金等最新行情（东方财富 secid，如美股 105.NVDA、黄金 101.GC00Y、日股 176.7203）。先用 search_symbol 拿到 secid，再查；价格与涨跌幅已按源口径，缺失为 null，不补 0。只返回行情事实，不含该市场完整档案。',
+    parameters: {
+      secid: { type: 'string', required: true, description: '东财 secid，如 105.NVDA / 101.GC00Y / 176.7203' },
+    },
+    output: jsonOut,
+    async execute(args) {
+      return asJson(await fetchGlobalQuote(String(args.secid ?? '')))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'get_global_kline',
+    description: '海外个股/指数/黄金等日K线（东方财富 secid）。返回 date/open/high/low/close/volume 升序，价格不除权处理（fqt=1 前复权）；缺失或空数据明确 error，不补 0。用于看英伟达、美股指数、黄金等近期走势。',
+    parameters: {
+      secid: { type: 'string', required: true, description: '东财 secid，如 105.NVDA / 100.SPX / 101.GC00Y' },
+      limit: { type: 'number', description: '返回最近多少根日K（1-500，默认 120）' },
+    },
+    output: jsonOut,
+    async execute(args) {
+      return asJson(await fetchGlobalKline(String(args.secid ?? ''), args.limit))
+    },
+  }))
+
+  // 全球跨资产快照：一次拿美股三大指数 + 恒生 + 黄金/白银/铜 + 美元指数的最新价与涨跌幅，
+  // 供「美股走势对黄金影响」这类跨市场问题先取得双方事实，再做机制分析（不预测涨跌）。
+  const CROSS_ASSET_BASKET = [
+    { secid: '100.SPX', label: '标普500' },
+    { secid: '100.DJIA', label: '道琼斯' },
+    { secid: '100.NDX', label: '纳斯达克' },
+    { secid: '100.HSI', label: '恒生指数' },
+    { secid: '101.GC00Y', label: 'COMEX黄金' },
+    { secid: '101.SI00Y', label: 'COMEX白银' },
+    { secid: '101.HG00Y', label: 'COMEX铜' },
+    { secid: '100.UDI', label: '美元指数' },
+  ]
+  ctx.tools.register(defineTool({
+    name: 'get_global_market_snapshot',
+    description: '全球跨资产快照：并发取美股三大指数、恒生、COMEX 黄金/白银/铜、美元指数的最新价与涨跌幅（东方财富 secid）。用于先取得「美股 vs 黄金」等多市场事实，再做传导分析。只给行情事实，不含因果；单行失败在该行标 error，缺失为 null 不补 0。',
+    parameters: {},
+    output: jsonOut,
+    async execute() {
+      const results = await Promise.all(CROSS_ASSET_BASKET.map(async item => {
+        const res = await fetchGlobalQuote(item.secid)
+        return { secid: item.secid, label: item.label, ok: res.ok, price: res.quote?.price ?? null, changePct: res.quote?.changePct ?? null, change: res.quote?.change ?? null, asOf: res.quote?.asOf, error: res.ok ? undefined : res.error }
+      }))
+      return asJson({ ok: true, at: new Date().toISOString(), source: 'eastmoney-push2', rows: results })
     },
   }))
 

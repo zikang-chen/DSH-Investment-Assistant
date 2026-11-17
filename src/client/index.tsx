@@ -1155,8 +1155,22 @@ function GlobalIndicesPanel() {
   const [at, setAt] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [openIndex, setOpenIndex] = useState('')
+  const [indexBars, setIndexBars] = useState<{ secid: string; bars: HistBar[]; error?: string } | undefined>()
+  const indexSeq = useRef(0)
+  const toggleIndex = async (row: GlobalIndexRow) => {
+    if (openIndex === row.secid) { setOpenIndex(''); setIndexBars(undefined); return }
+    setOpenIndex(row.secid); setIndexBars(undefined)
+    const seq = ++indexSeq.current
+    try {
+      const r = await apiGet<{ ok?: boolean; bars?: HistBar[]; error?: string }>(`/global/kline?secid=${encodeURIComponent(row.secid)}&limit=180`)
+      if (indexSeq.current !== seq) return
+      setIndexBars({ secid: row.secid, bars: r.ok === false ? [] : r.bars ?? [], error: r.ok === false ? (r.error || 'K线读取失败') : undefined })
+    } catch (err) { if (indexSeq.current === seq) setIndexBars({ secid: row.secid, bars: [], error: errText(err) }) }
+  }
+  const openRow = rows.find(row => row.secid === openIndex)
   const load = useCallback(async (target: string) => {
-    setLoading(true); setError('')
+    setLoading(true); setError(''); setOpenIndex(''); setIndexBars(undefined)
     try {
       const r = await apiGet<{ ok?: boolean; at?: string; rows?: GlobalIndexRow[]; error?: string }>(`/global-indices?region=${encodeURIComponent(target)}`)
       if (r.ok === false) throw new Error(r.error || '全球行情读取失败')
@@ -1186,16 +1200,26 @@ function GlobalIndicesPanel() {
               rows.map(row => {
                 const pct = typeof row.changePct === 'number' ? row.changePct : undefined
                 const color = colorOf(pct)
-                return h('div', { key: row.secid, style: { ...S.card, gap: 3, padding: '8px 10px', minWidth: 0 } },
+                const active = openIndex === row.secid
+                return h('button', {
+                  key: row.secid, type: 'button', onClick: () => void toggleIndex(row), 'aria-expanded': active,
+                  title: '点击查看该指数日K',
+                  style: { ...S.card, gap: 3, padding: '8px 10px', minWidth: 0, textAlign: 'left', cursor: 'pointer', font: 'inherit', color: V('--fia-text', '#111'), border: `1px solid ${active ? BRAND : R.line}` },
+                },
                   h('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline', minWidth: 0 } },
                     h('span', { style: { fontWeight: 600, fontSize: 11.5, flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: row.name }, row.name),
                     pct === undefined ? null : h('span', { style: { color, fontWeight: 600, fontSize: 11.5, fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' } }, `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`)),
                   h('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 } },
                     h('span', { style: { fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, typeof row.price === 'number' ? formatNumber(row.price, { decimals: 2 }) : '—'),
                     typeof row.change === 'number' ? h('span', { style: { ...S.muted, fontSize: 10.5, fontVariantNumeric: 'tabular-nums' } }, `${row.change >= 0 ? '+' : ''}${formatNumber(row.change, { decimals: 2 })}`) : null),
-                  h('span', { style: { ...S.muted, fontSize: 10 } }, `${row.region ?? region}${row.asOf ? ` · ${row.asOf}` : ''} · 东财`))
+                  h('span', { style: { ...S.muted, fontSize: 10 } }, `${row.region ?? region}${row.asOf ? ` · ${row.asOf}` : ''} · 东财${active ? ' · 收起' : ' · 看K线'}`))
               })),
-      h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：东方财富全球指数；默认美国。指数点位与显示精度以源为准，数据可能延迟，不代表可交易报价。')))
+      openRow ? h('div', { style: { borderTop: `1px solid ${R.line}`, paddingTop: 8 } },
+        h('div', { style: { ...S.title, marginBottom: 6 } }, `${openRow.name} · 日K`),
+        indexBars?.secid === openRow.secid
+          ? (indexBars.error ? h('div', { role: 'alert', style: { ...S.muted, color: DANGER, fontSize: 12 } }, indexBars.error) : indexBars.bars.length ? h(KlineChart, { bars: indexBars.bars, title: `${openRow.name} 日K`, height: 280 }) : h('div', { style: S.muted }, '暂无K线数据。'))
+          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 140 }))) : null,
+      h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：东方财富全球指数；默认美国。点击任一指数可展开日K线。点位与显示精度以源为准，可能延迟，不代表可交易报价。')))
 }
 
 function QuotesView(props: {
@@ -3847,7 +3871,7 @@ function PanelBody(props: {
     if (id === 'dossier' && tab !== 'dossier') setSecurityReturnTab(tab)
     setTab(id); try { window.localStorage.setItem(TAB_KEY, id) } catch { /* */ }
   }
-  const [dossierTarget, setDossierTarget] = useState<{ code: string; name?: string; type?: 'stock' | 'fund'; at: number } | undefined>()
+  const [dossierTarget, setDossierTarget] = useState<{ code: string; name?: string; type?: 'stock' | 'fund'; secid?: string; market?: string; at: number } | undefined>()
   useEffect(() => {
     const openSecurity = (event: Event) => {
       const item = (event as CustomEvent<SecurityIdentity>).detail

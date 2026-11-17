@@ -12,6 +12,14 @@
 | 基金 | 净值/排行/净值走势 | 东财 `fund_quote`/`fund_kline`/`fund_rank` | 净值 T+1；日期是净值日，不是实时价 |
 | 基金档案 | 经理/规模/申赎/同类排名/重仓/风险/基准 | `fund_dossier`（东财画像 + 本地计算） | 重仓披露有滞后；场外完整持仓需定期报告 |
 
+## 全球个股 / 指数 / 商品行情与 K 线
+
+- 工具：`get_global_quote(secid)`、`get_global_kline(secid, limit)`、`get_global_market_snapshot()`；HTTP：`/global/quote`、`/global/kline`；面板：行点击指数展开日K，海外个股在资料页显示行情+日K。
+- 先用 `search_symbol` 拿东财 `secid`：美股 `105.NVDA`、指数 `100.SPX`/`100.NDX`/`100.HSI`、黄金 `101.GC00Y`、白银 `101.SI00Y`、铜 `101.HG00Y`、美元指数 `100.UDI`、日股 `176.7203`、英股 `155.TYT`。
+- 缺失字段为 `null`、不补 0；K线只丢弃无效/非正收盘行；失败行不影响其他行。日K为前复权（fqt=1）。
+- `get_global_market_snapshot` 一次返回美股三大指数 + 恒生 + 黄金/白银/铜 + 美元指数，用于「美股走势对黄金影响」这类跨市场问题先取双方事实；**只给行情，不给因果或涨跌预测**。
+- 覆盖边界：不是所有交易所/品种都有 secid（如本机实测 VIX、原油、美债收益率无对应 secid）；缺失时明确，不编造。
+
 ## 全球指数行情（默认美国）
 
 - 面板「市场研究 → 行情」顶部新增「全球行情」，默认美国，可切亚太/欧洲/中国；HTTP `GET /global-indices?region=us|asia|europe|china|all`。

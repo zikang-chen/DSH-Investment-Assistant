@@ -28,6 +28,7 @@ description: 当用户用自然语言请求股票/基金研究、全球或中国
    - 基金：经理、持仓披露期、历史收益/回撤、费用；需要时再查重仓企业财务。基金不是有营业收入的企业。基金页支持名称/代码检索、排行分页、净值走势与完整档案，不能只看排行。
    - 全球宏观：`get_macro_global` 提供美国 CPI（OECD）、欧元区 HICP/失业率（Eurostat）、美欧 GDP（World Bank）、欧央行政策利率（ECB）六条结构化序列；每条带 source/asOf/unit，失败或空值明确标 error，不补 0。中国仍用 `get_macro_china` 五类，不存在通用全球宏观库。
    - 全球新闻：`get_global_news_radar` 只抓已核实官方源（Fed/ECB/BIS/SEC/BoE），分数是覆盖源范围内的相对重要性（来源/事件/时间衰减），**不是因果或涨跌预测**；媒体源默认关闭，不能声称“全市场最重要”。
+   - 全球个股/指数/商品：先用 `search_symbol` 取东财 secid，再 `get_global_quote` / `get_global_kline`（如英伟达 105.NVDA、纳指 100.NDX、黄金 101.GC00Y）。跨市场问题（如「美股走势对黄金影响」）先 `get_global_market_snapshot` 拿到美股指数+黄金+美元等双方事实，再写条件性传导与失效条件，不把相关性写成因果。
    - 美/港财务：`get_global_financials`（美股 SEC XBRL 10-K/10-Q；港股东财 HKF10 中报/季报为累计口径）；SEC 需配置含联系邮箱的 `DSH_SEC_EDGAR_UA`，缺失应明示失败。
    - 政策/白皮书：核对效力、版本和原文。`policy_import` URL 受 allowlist 限制（国际官方源已可手工导入但默认不自动抓取），国际官方来源不等于可直接入政策库；用资料库或用户合法提供的本地文件/正文等实际通路。
 5. **综合与反证**：区分事实、条件推断、未验证叙事；政策目标 ≠ 执行 ≠ 企业盈利 ≠ 已被市场定价。重大缺口建 Evidence Request，不能用更多弱证据冲淡缺口。

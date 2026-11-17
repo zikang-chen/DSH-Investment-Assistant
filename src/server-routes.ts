@@ -10,6 +10,7 @@ import type { McpManager } from './mcp/manager.js'
 import { buildStockDossier, dossierSummary } from './data/dossier.js'
 import { buildFundDossier } from './data/fund-dossier.js'
 import { normalizeGlobalRegion } from './data/global-indices.js'
+import { fetchGlobalQuote, fetchGlobalKline } from './data/global-quotes.js'
 import { buildLookthrough } from './lookthrough.js'
 import type { ReminderOptions, ReminderScanResult, ReminderStore } from './reminders.js'
 import type { PanelBus } from './panel-bus.js'
@@ -1084,6 +1085,18 @@ export function registerRoutes(
           }
           const report = await finance.getGlobalIndices(region)
           return sendJson(res, 200, report)
+        }
+        // 海外个股/指数行情与K线：仅按真实 secid 请求，不按代码位数猜市场。
+        if (req.method === 'GET' && sub === '/global/quote') {
+          const result = await fetchGlobalQuote(url.searchParams.get('secid') ?? '')
+          return sendJson(res, result.ok ? 200 : 400, result)
+        }
+        if (req.method === 'GET' && sub === '/global/kline') {
+          const result = await fetchGlobalKline(
+            url.searchParams.get('secid') ?? '',
+            url.searchParams.get('limit') ?? undefined,
+          )
+          return sendJson(res, result.ok ? 200 : 400, result)
         }
         if (req.method === 'GET' && sub === '/fundrank') {
           const fundType = url.searchParams.get('type') ?? 'all'

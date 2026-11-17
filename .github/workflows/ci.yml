@@ -63,6 +63,9 @@ jobs:
       - name: Global index quotes
         run: npm run test:global-indices
 
+      - name: Global stock/commodity quotes and K-line
+        run: npm run test:global-quotes
+
       # 离线、确定性的套件；依赖外部数据源或 POSIX 文件权限的套件不在此跑。
       - name: Policy
         run: npm run test:policy

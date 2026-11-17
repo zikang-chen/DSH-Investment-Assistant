@@ -1,15 +1,31 @@
 import type { AssetType } from '../types.js'
 
-export interface SecurityIdentity { code: string; name?: string; type: AssetType }
+export interface SecurityIdentity { code: string; name?: string; type: AssetType; /** 海外标的的东财 secid（如 176.7203）；有它才能按真实市场取行情/K线 */ secid?: string; /** 原始市场标签（日股/英股/美股…），用于判断走国内档案还是海外行情 */ market?: string }
 export interface SecurityMatch { code: string; name: string; market: string; type?: string; secid?: string }
 export const SECURITY_OPEN_EVENT = 'dsh-finance:security-open'
+
+/** Markets already covered by the domestic A/H/US dossier pipeline. */
+const COVERED_MARKETS = /^(沪市|深市|京市|北交所|A股|港股|美股|基金|ETF|LOF)$/i
+
+/** Overseas individual securities outside the A/H/US pipeline render the global quote/K-line view. */
+export function isGlobalSecurity(item: SecurityIdentity | null | undefined): boolean {
+  if (!item || item.type === 'fund') return false
+  if (!item.secid) return false
+  const market = (item.market ?? '').trim()
+  if (!market) return false
+  return !COVERED_MARKETS.test(market)
+}
 
 /** Never infer a fund from a six-digit code: A-shares and funds can share codes. */
 export function identityFromMatch(match: SecurityMatch): SecurityIdentity | null {
   const label = `${match.market} ${match.type ?? ''}`
   if (/指数|index|期货|futures|债券|bond|板块|sector/i.test(label) && !/基金|ETF|LOF|fund/i.test(label)) return null
   if (!match.code.trim()) return null
-  return { code: match.code.trim(), name: match.name, type: /基金|ETF|LOF|fund/i.test(label) ? 'fund' : 'stock' }
+  const type: AssetType = /基金|ETF|LOF|fund/i.test(label) ? 'fund' : 'stock'
+  const identity: SecurityIdentity = { code: match.code.trim(), name: match.name, type }
+  if (match.secid) identity.secid = match.secid
+  if (match.market) identity.market = match.market
+  return identity
 }
 export function securityKey(item: SecurityIdentity): string { return `${item.type}:${item.code}` }
 export function uniqueMatches(matches: SecurityMatch[]): SecurityMatch[] {

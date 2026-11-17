@@ -85,6 +85,15 @@
 
 **美/港财务**：`get_global_financials(code,market)`；美股来自 SEC XBRL（10-K 年度、10-Q 单季，20-F 等非目标表单会明确失败），需 `DSH_SEC_EDGAR_UA` 含可联系邮箱，缺失时不得伪造；港股来自东财 HKF10 主要指标，中报/季报是**年初至今累计**，币种以返回为准。两者文本/披露均可能滞后，不能把 HK 累计当单季、也不能把 SEC 抓取时间当报告期。
 
+**全球个股/指数/商品行情与K线**：先用 `search_symbol`（或面板搜索）拿东财 `secid`，再用 `get_global_quote(secid)` / `get_global_kline(secid,limit)`。常见 secid：美股 `105.NVDA`/`105.AAPL`、指数 `100.SPX`/`100.NDX`/`100.HSI`、黄金 `101.GC00Y`、白银 `101.SI00Y`、铜 `101.HG00Y`、美元指数 `100.UDI`、日股 `176.7203`。价格与涨跌幅按源口径，缺失为 null 不补 0；这是行情事实，不含该市场完整财报档案（能用 SEC/HKF10 的另查）。海外个股在面板资料页直接显示行情与日K，不再套国内档案。
+
+**跨市场问题（如「英伟达最近走势 + 美股走势对黄金的影响」）的建议取证顺序**：
+1. `search_symbol` 确认标的与 secid；`get_global_kline` 看英伟达/纳指近期走势（给区间涨跌、波动，不给“必涨”）。
+2. `get_global_market_snapshot` 一次取美股三大指数 + 恒生 + 黄金/白银/铜 + 美元指数的当期涨跌，建立“双方事实”。
+3. 需要时 `get_global_news_radar`（官方源重大事件）、`get_macro_global`（美 CPI/利率）、`get_macro_china`（若涉及中国资产）。
+4. 传导只写机制与条件：美股/美元/实际利率 → 黄金通常的反向或避险关系是**条件性经验**，必须用当期数据检验，不得写成因果或必涨必跌；明确“本轮数据支持/不支持/无定论”，列失效条件。
+5. 保存：资料 `save_research`，判断 `investment_advice_generate`（缺关键数据则 `INSUFFICIENT_DATA`，不给仓位）。
+
 A 股资金流/公司事件：`stock_dossier` 的 `money_flow`（20 日逐日主力/大单/超大单/中单/小单净额与占比）、`announcements`、`dividend_plan`、`performance`（预告与快报）、`block_trade`、`margin_detail`。资金流是算法统计，不是公司现金流；分红每 10 股口径、预告区间与快报实际值、大宗折溢价字段都要按原单位读，不擅自换算。
 
 市场数据同理：项目已有 A/H/美股行情与 K 线，并非全球所有指数、外汇、债券、商品实时行情；只有在实际检索到并核对的来源上才能比较。全球指数/黄金/美元指数可作为跨资产反应参考，但不是完整行情库。WeStock 如需扩展，先 `westock_capabilities` 发现；本机 WeStock CLI 是 Linux 二进制、Windows 环境不可执行，失败时如实标注并改用可用 HTTP 源，不伪造成功。
