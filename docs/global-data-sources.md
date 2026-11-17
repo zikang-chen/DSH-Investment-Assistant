@@ -12,6 +12,23 @@
 | 基金 | 净值/排行/净值走势 | 东财 `fund_quote`/`fund_kline`/`fund_rank` | 净值 T+1；日期是净值日，不是实时价 |
 | 基金档案 | 经理/规模/申赎/同类排名/重仓/风险/基准 | `fund_dossier`（东财画像 + 本地计算） | 重仓披露有滞后；场外完整持仓需定期报告 |
 
+## 覆盖扩充与可用性说明（2026-11-17 实测）
+
+本轮针对“取数失败”做了排查与补强：
+
+| 项目 | 状态 |
+| --- | --- |
+| 全球指数 | 由 14 增至 **24**：新增 加拿大TSX、恒生科技(124.HSTECH)、欧洲斯托克50(100.SX5E)，以及新增“商品/利率”区域 7 项 |
+| 商品/利率（新区域） | 黄金 `101.GC00Y`、白银 `101.SI00Y`、铜 `101.HG00Y`、NYMEX原油 `102.CL00Y`、布伦特 `112.B00Y`、美国10年期国债收益率 `171.US10Y`、美元指数 `100.UDI` —— 7/7 实测可取 |
+| `get_dividend` | WeStock 失败时自动回退东财 `dividend_plan` |
+| `get_margin_trade` | WeStock 失败时自动回退东财 `margin_detail` |
+| `get_notice_list` | 优先东财 `announcements`，再回退 WeStock `notice_list` |
+| VIX | 东财只有 VIX 相关 ETF（如 107.VIXY），**没有指数本身**；不伪造 |
+| 巴西 IBOV | 无可用 secid，明确失败 |
+| 仍仅 WeStock（本机不可执行→会失败并如实标注） | 一致预期、股东研究、龙虎榜、北向持仓、筹码分布、股票评分、机构评级、ESG、研报、ETF 概览/持仓 |
+
+后续可继续补的接口方向（尚未实现，需逐个线上核实）：东财 datacenter 的龙虎榜/股东/一致预期报表、ETF 折溢价页面接口。
+
 ## 全球个股 / 指数 / 商品行情与 K 线
 
 - 工具：`get_global_quote(secid)`、`get_global_kline(secid, limit)`、`get_global_market_snapshot()`；HTTP：`/global/quote`、`/global/kline`；面板：行点击指数展开日K，海外个股在资料页显示行情+日K。

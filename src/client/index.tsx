@@ -1146,7 +1146,7 @@ function SearchAdd(props: { onAdd: (code: string, type: AssetType) => void }) {
 // ---- 行情 tab ----
 /** 全球主要指数：默认美国，可切换亚太/欧洲/中国；接口返回 null 时显示 —，不补 0。 */
 const GLOBAL_REGIONS: Array<{ id: string; label: string }> = [
-  { id: 'us', label: '美国' }, { id: 'asia', label: '亚太' }, { id: 'europe', label: '欧洲' }, { id: 'china', label: '中国' },
+  { id: 'us', label: '美国' }, { id: 'asia', label: '亚太' }, { id: 'europe', label: '欧洲' }, { id: 'china', label: '中国' }, { id: 'commodities', label: '商品/利率' },
 ]
 interface GlobalIndexRow { secid: string; name: string; region?: string; price?: number | null; changePct?: number | null; change?: number | null; asOf?: string; source?: string }
 function GlobalIndicesPanel() {

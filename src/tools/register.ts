@@ -720,9 +720,12 @@ export function registerTools(ctx: Context, finance: FinanceDataService, store: 
     { secid: '100.DJIA', label: '道琼斯' },
     { secid: '100.NDX', label: '纳斯达克' },
     { secid: '100.HSI', label: '恒生指数' },
+    { secid: '124.HSTECH', label: '恒生科技' },
     { secid: '101.GC00Y', label: 'COMEX黄金' },
     { secid: '101.SI00Y', label: 'COMEX白银' },
     { secid: '101.HG00Y', label: 'COMEX铜' },
+    { secid: '102.CL00Y', label: 'NYMEX原油' },
+    { secid: '171.US10Y', label: '美国10年期国债收益率' },
     { secid: '100.UDI', label: '美元指数' },
   ]
   ctx.tools.register(defineTool({

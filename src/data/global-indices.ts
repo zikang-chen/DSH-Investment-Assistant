@@ -17,8 +17,8 @@ import { httpGetJson } from './http.js'
 
 // ---------------------------------------------------------------- 区域与指数清单
 
-/** 面板可切换的四个区域（默认 us）。 */
-export const GLOBAL_REGIONS = ['us', 'asia', 'europe', 'china'] as const
+/** 面板可切换的区域（默认 us）。commodities = 商品与美债收益率，便于看跨资产联动。 */
+export const GLOBAL_REGIONS = ['us', 'asia', 'europe', 'china', 'commodities'] as const
 export type GlobalRegion = (typeof GLOBAL_REGIONS)[number]
 /** `all` 表示一次返回全部区域。 */
 export type GlobalRegionFilter = GlobalRegion | 'all'
@@ -28,6 +28,7 @@ export const GLOBAL_REGION_LABELS: Record<GlobalRegion, string> = {
   asia: '亚太',
   europe: '欧洲',
   china: '中国',
+  commodities: '商品/利率',
 }
 
 export interface GlobalIndexDef {
@@ -51,13 +52,16 @@ export const GLOBAL_INDEX_DEFS: readonly GlobalIndexDef[] = [
   { secid: '100.SPX', code: 'SPX', name: '标普500', region: 'us' },
   { secid: '100.DJIA', code: 'DJIA', name: '道琼斯', region: 'us' },
   { secid: '100.NDX', code: 'NDX', name: '纳斯达克', region: 'us' },
+  { secid: '100.TSX', code: 'TSX', name: '加拿大S&P/TSX', region: 'us' },
   // ---- 亚太（澳洲归入亚太，面板只有四个区域）----
   { secid: '100.HSI', code: 'HSI', name: '恒生指数', region: 'asia' },
+  { secid: '124.HSTECH', code: 'HSTECH', name: '恒生科技指数', region: 'asia' },
   { secid: '100.N225', code: 'N225', name: '日经225', region: 'asia' },
   { secid: '100.KS11', code: 'KS11', name: '韩国综合指数', region: 'asia' },
   { secid: '100.SENSEX', code: 'SENSEX', name: '印度孟买Sensex', region: 'asia' },
   { secid: '100.AS51', code: 'AS51', name: '澳洲标普200', region: 'asia' },
   // ---- 欧洲 ----
+  { secid: '100.SX5E', code: 'SX5E', name: '欧洲斯托克50', region: 'europe' },
   { secid: '100.FTSE', code: 'FTSE', name: '英国富时100', region: 'europe' },
   { secid: '100.GDAXI', code: 'GDAXI', name: '德国DAX', region: 'europe' },
   { secid: '100.FCHI', code: 'FCHI', name: '法国CAC40', region: 'europe' },
@@ -65,6 +69,14 @@ export const GLOBAL_INDEX_DEFS: readonly GlobalIndexDef[] = [
   { secid: '1.000001', code: '000001', name: '上证指数', region: 'china' },
   { secid: '0.399001', code: '399001', name: '深证成指', region: 'china' },
   { secid: '0.399006', code: '399006', name: '创业板指', region: 'china' },
+  // ---- 商品与利率（跨资产参考）----
+  { secid: '101.GC00Y', code: 'GC00Y', name: 'COMEX黄金', region: 'commodities' },
+  { secid: '101.SI00Y', code: 'SI00Y', name: 'COMEX白银', region: 'commodities' },
+  { secid: '101.HG00Y', code: 'HG00Y', name: 'COMEX铜', region: 'commodities' },
+  { secid: '102.CL00Y', code: 'CL00Y', name: 'NYMEX原油', region: 'commodities' },
+  { secid: '112.B00Y', code: 'B00Y', name: '布伦特原油', region: 'commodities' },
+  { secid: '171.US10Y', code: 'US10Y', name: '美国10年期国债收益率', region: 'commodities' },
+  { secid: '100.UDI', code: 'UDI', name: '美元指数', region: 'commodities' },
 ]
 
 /**

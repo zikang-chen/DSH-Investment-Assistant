@@ -103,8 +103,8 @@ try {
   // -------------------------------------------------------------------------
   // 1) 区域枚举 / secid 清单
   // -------------------------------------------------------------------------
-  check('区域枚举固定为 us/asia/europe/china，默认 us，all 表示全部', () => {
-    assert.deepEqual([...GLOBAL_REGIONS], ['us', 'asia', 'europe', 'china'])
+  check('区域枚举 us/asia/europe/china/commodities，默认 us，all 表示全部', () => {
+    assert.deepEqual([...GLOBAL_REGIONS], ['us', 'asia', 'europe', 'china', 'commodities'])
     assert.equal(GLOBAL_REGION_LABELS.us, '美国')
     assert.equal(GLOBAL_REGION_LABELS.asia, '亚太')
     assert.equal(normalizeGlobalRegion(undefined), 'us')
@@ -116,19 +116,20 @@ try {
     assert.equal(normalizeGlobalRegion(null), 'us')
   })
 
-  check('14 个指数 secid 按区域映射齐全且不重复', () => {
-    assert.equal(GLOBAL_INDEX_DEFS.length, 14)
+  check('指数 secid 按区域映射齐全且不重复', () => {
+    assert.equal(GLOBAL_INDEX_DEFS.length, 24)
     const expected: Record<string, string[]> = {
-      us: ['100.SPX', '100.DJIA', '100.NDX'],
-      asia: ['100.HSI', '100.N225', '100.KS11', '100.SENSEX', '100.AS51'],
-      europe: ['100.FTSE', '100.GDAXI', '100.FCHI'],
+      us: ['100.SPX', '100.DJIA', '100.NDX', '100.TSX'],
+      asia: ['100.HSI', '124.HSTECH', '100.N225', '100.KS11', '100.SENSEX', '100.AS51'],
+      europe: ['100.SX5E', '100.FTSE', '100.GDAXI', '100.FCHI'],
       china: ['1.000001', '0.399001', '0.399006'],
+      commodities: ['101.GC00Y', '101.SI00Y', '101.HG00Y', '102.CL00Y', '112.B00Y', '171.US10Y', '100.UDI'],
     }
     for (const region of GLOBAL_REGIONS) {
       assert.deepEqual(globalIndicesForRegion(region).map((d) => d.secid), expected[region])
     }
-    assert.equal(new Set(GLOBAL_INDEX_DEFS.map((d) => d.secid)).size, 14)
-    assert.equal(globalIndicesForRegion('all').length, 14)
+    assert.equal(new Set(GLOBAL_INDEX_DEFS.map((d) => d.secid)).size, 24)
+    assert.equal(globalIndicesForRegion('all').length, 24)
     // 常用名/短代码映射（允许源侧 f58 覆盖 name，但清单本身要稳定可读）
     assert.equal(defOf('100.SPX').name, '标普500')
     assert.equal(defOf('100.HSI').region, 'asia')
@@ -221,11 +222,11 @@ try {
     assert.equal(report.region, 'europe')
     assert.equal(report.failed, 0)
     assert.equal(report.cacheHits, 0)
-    assert.deepEqual(report.rows.map((r) => r.secid), ['100.FTSE', '100.GDAXI', '100.FCHI'])
+    assert.deepEqual(report.rows.map((r) => r.secid), ['100.SX5E', '100.FTSE', '100.GDAXI', '100.FCHI'])
     assert.equal(report.at, new Date(CLOCK).toISOString())
     assert.equal(report.rows[0]!.asOf, TS_ISO)
     assert.notEqual(report.at, report.rows[0]!.asOf, '抓取时间不能等于行情时间')
-    assert.equal(fake.calls.length, 3)
+    assert.equal(fake.calls.length, 4)
     for (const call of fake.calls) {
       assert.equal(call.url, EM_GLOBAL_INDEX_URL)
       assert.equal(call.params.fltt, 2)
@@ -235,18 +236,18 @@ try {
     }
   })
 
-  await checkAsync('region=all 返回全部 14 行；空 region 默认美国', async () => {
+  await checkAsync('region=all 返回全部 24 行；空 region 默认美国', async () => {
     clearGlobalIndicesCache()
     const all = fixtureFetch()
     const report = await fetchGlobalIndices({ region: 'all', fetchJson: all.fetchJson, now: () => CLOCK, cache: false })
-    assert.equal(report.rows.length, 14)
+    assert.equal(report.rows.length, 24)
     assert.deepEqual(report.rows.map((r) => r.secid), GLOBAL_INDEX_DEFS.map((d) => d.secid))
-    assert.equal(new Set(report.rows.map((r) => r.region)).size, 4)
+    assert.equal(new Set(report.rows.map((r) => r.region)).size, 5)
     clearGlobalIndicesCache()
     const us = fixtureFetch()
     const defaulted = await fetchGlobalIndices({ fetchJson: us.fetchJson, now: () => CLOCK, cache: false })
     assert.equal(defaulted.region, 'us')
-    assert.equal(defaulted.rows.length, 3)
+    assert.equal(defaulted.rows.length, 4)
   })
 
   await checkAsync('未知 region 返回 ok:false + region:null，且不发任何请求', async () => {
@@ -272,7 +273,7 @@ try {
     const report = await fetchGlobalIndices({ region: 'us', fetchJson: fake.fetchJson, now: () => CLOCK, cache: false })
     assert.equal(report.ok, true)
     assert.equal(report.failed, 1)
-    assert.equal(report.rows.length, 3)
+    assert.equal(report.rows.length, 4)
     const ndx = report.rows.find((r) => r.secid === '100.NDX')!
     assert.equal(ndx.price, null)
     assert.equal(ndx.changePct, null)
@@ -290,11 +291,11 @@ try {
     let clock = CLOCK
     const first = await fetchGlobalIndices({ region: 'us', fetchJson: fake.fetchJson, now: () => clock })
     assert.equal(first.cacheHits, 0)
-    assert.equal(fake.calls.length, 3)
+    assert.equal(fake.calls.length, 4)
     clock += GLOBAL_INDICES_CACHE_TTL_MS - 1
     const second = await fetchGlobalIndices({ region: 'us', fetchJson: fake.fetchJson, now: () => clock })
-    assert.equal(fake.calls.length, 3, 'TTL 内不应再打上游')
-    assert.equal(second.cacheHits, 3)
+    assert.equal(fake.calls.length, 4, 'TTL 内不应再打上游')
+    assert.equal(second.cacheHits, 4)
     assert.deepEqual(second.rows.map((r) => r.price), first.rows.map((r) => r.price))
     assert.equal(second.at, first.at, '全部命中缓存时 at 不能假装是刚刚抓的')
   })
@@ -306,7 +307,7 @@ try {
     await fetchGlobalIndices({ region: 'us', fetchJson: fake.fetchJson, now: () => clock })
     clock += GLOBAL_INDICES_CACHE_TTL_MS
     const report = await fetchGlobalIndices({ region: 'us', fetchJson: fake.fetchJson, now: () => clock })
-    assert.equal(fake.calls.length, 6)
+    assert.equal(fake.calls.length, 8)
     assert.equal(report.cacheHits, 0)
     assert.equal(report.at, new Date(clock).toISOString())
   })
@@ -317,12 +318,12 @@ try {
     const failing: GlobalIndicesFetchJson = async () => { calls += 1; throw new Error('all upstream down') }
     const first = await fetchGlobalIndices({ region: 'us', fetchJson: failing, now: () => CLOCK })
     assert.equal(first.ok, false)
-    assert.equal(first.failed, 3)
-    assert.deepEqual(first.rows.map((r) => r.price), [null, null, null])
+    assert.equal(first.failed, 4)
+    assert.deepEqual(first.rows.map((r) => r.price), [null, null, null, null])
     assert.match(first.error!, /不可用/)
-    assert.equal(calls, 3)
+    assert.equal(calls, 4)
     const second = await fetchGlobalIndices({ region: 'us', fetchJson: failing, now: () => CLOCK + 1_000 })
-    assert.equal(calls, 6, '失败行不缓存，必须重试')
+    assert.equal(calls, 8, '失败行不缓存，必须重试')
     assert.equal(second.cacheHits, 0)
     // 源恢复后立刻能拿到数据（没有残留的失败缓存）
     const recovered = fixtureFetch()
@@ -345,7 +346,7 @@ try {
     calls = 0
     const second = await fetchGlobalIndices({ region: 'us', fetchJson: flaky, now: () => CLOCK + 1_000 })
     assert.equal(calls, 1, '只重试失败行')
-    assert.equal(second.cacheHits, 2, '成功行命中缓存')
+    assert.equal(second.cacheHits, 3, '成功行命中缓存')
     assert.equal(second.failed, 1)
   })
 
@@ -362,7 +363,7 @@ try {
       return emPayload({ f43: 1000 + GLOBAL_INDEX_DEFS.indexOf(def) })
     }
     const report = await fetchGlobalIndices({ region: 'all', fetchJson, now: () => CLOCK, cache: false })
-    assert.equal(report.rows.length, 14)
+    assert.equal(report.rows.length, 24)
     assert.ok(maxActive <= GLOBAL_INDICES_CONCURRENCY, `maxActive=${maxActive}`)
     assert.ok(maxActive >= 2, `应至少有 2 路并发，实际 ${maxActive}`)
   })

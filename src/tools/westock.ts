@@ -111,12 +111,12 @@ export function registerWestockTools(ctx: Context, finance: FinanceDataService) 
     { name: 'get_money_flow', capability: 'money_flow', label: '个股资金流向（主力/超大单/散户，含 5/10/20 日）', args: { code: '代码参数名', start: '起始日 YYYY-MM-DD（可选）', end: '结束日（可选）' } },
     { name: 'get_consensus', capability: 'consensus', label: '一致预期：目标价、EPS/营收/净利润预测、PE/PB/PS、覆盖机构数', args: { code: '代码参数名' } },
     { name: 'get_shareholder', capability: 'shareholder', label: '股东研究：十大股东/股东户数及变动', args: { code: '代码参数名' } },
-    { name: 'get_dividend', capability: 'dividend', label: '分红历史（A股/港股/美股）：每股派息、除权日、方案', args: { code: '代码参数名' } },
+    { name: 'get_dividend', capability: 'dividend', fallback: 'dividend_plan', label: '分红历史（A股/港股/美股）：每股派息、除权日、方案', args: { code: '代码参数名' } },
     { name: 'get_stock_events', capability: 'stock_events', label: '个股事件总览（42 类事件标签）', args: { code: '代码参数名' } },
     { name: 'get_risk_events', capability: 'risk_events', label: '风险事件监控（质押/减持/诉讼等，仅A股）', args: { code: '代码参数名' } },
     { name: 'get_disclosure_calendar', capability: 'disclosure_calendar', label: '财报披露日历（业绩预约披露日）', args: { code: '代码参数名' } },
     { name: 'get_dragon_tiger', capability: 'dragon_tiger', label: '个股龙虎榜（席位买卖明细；当日未必上榜，可给 start/end 区间）', args: { code: '代码参数名', date: '日期（可选）', start: '区间起始（可选）', end: '区间结束（可选）' } },
-    { name: 'get_margin_trade', capability: 'margin_trade', label: '融资融券余额与变动', args: { code: '代码参数名', date: '日期（可选）' } },
+    { name: 'get_margin_trade', capability: 'margin_trade', fallback: 'margin_detail', label: '融资融券余额与变动', args: { code: '代码参数名', date: '日期（可选）' } },
     { name: 'get_chip_distribution', capability: 'chip', label: '筹码分布：平均成本、集中度、获利盘比例（仅A股）', args: { code: '代码参数名' } },
     { name: 'get_stock_score', capability: 'stock_score', label: '股票评分：综合/基本面/技术/资金/风险分及周月季变动', args: { code: '代码参数名' } },
     { name: 'get_institution_rating', capability: 'institution_rating', label: '机构评级（港股/美股）', args: { code: '代码参数名' } },
@@ -147,7 +147,16 @@ export function registerWestockTools(ctx: Context, finance: FinanceDataService) 
         if (args.date) payload.date = String(args.date)
         if (args.start) payload.start = String(args.start)
         if (args.end) payload.end = String(args.end)
-        return callCap(finance, spec.capability, payload, exec.signal)
+        // Try the WeStock capability first, then an HTTP/Eastmoney fallback when the
+        // CLI is unavailable on this host (e.g. Windows cannot run the Linux binary).
+        const caps = [spec.capability, ...((spec as { fallback?: string }).fallback ? [(spec as { fallback?: string }).fallback!] : [])]
+        let last: JsonValue = { ok: false, error: '未执行' }
+        for (const cap of caps) {
+          last = await callCap(finance, cap, payload, exec.signal)
+          const ok = !(last && typeof last === 'object' && (last as { ok?: boolean }).ok === false)
+          if (ok) return last
+        }
+        return last
       },
     }))
   }
@@ -162,11 +171,16 @@ export function registerWestockTools(ctx: Context, finance: FinanceDataService) 
     },
     output: jsonOut,
     async execute(args, exec) {
-      return callCap(finance, 'notice_list', {
+      const payload = {
         code: String(args.code ?? ''),
         limit: Number(args.limit ?? 10),
         ...(args.offset ? { offset: Number(args.offset) } : {}),
-      }, exec.signal)
+      }
+      // 公告优先走东财公告接口（本机可用），WeStock 不可执行时不再直接失败。
+      const first = await callCap(finance, 'announcements', payload, exec.signal)
+      const firstOk = !(first && typeof first === 'object' && (first as { ok?: boolean }).ok === false)
+      if (firstOk) return first
+      return callCap(finance, 'notice_list', payload, exec.signal)
     },
   }))
 

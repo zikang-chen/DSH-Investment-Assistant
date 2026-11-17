@@ -108,4 +108,11 @@ test('http routes and UI wiring exist for global quote/kline and clickable index
   assert.match(workspace, /\/global\/quote\?secid=/)
   assert.match(workspace, /\/global\/kline\?secid=/)
 })
+test('weStock-first tools fall back to Eastmoney when the CLI is unavailable', () => {
+  const westock = readFileSync(new URL('../src/tools/westock.ts', import.meta.url), 'utf8')
+  assert.match(westock, /fallback: 'dividend_plan'/)
+  assert.match(westock, /fallback: 'margin_detail'/)
+  assert.match(westock, /callCap\(finance, 'announcements', payload, exec\.signal\)/)
+  assert.match(westock, /return callCap\(finance, 'notice_list', payload, exec\.signal\)/)
+})
 console.log(`[global-quotes] ${passed} pure/static groups passed; no live network used in this test.`)
