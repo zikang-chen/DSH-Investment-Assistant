@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 仓库按上游约定忽略 package-lock.json，因此不能用 npm ci / cache: npm。
+      # 依赖版本在 package.json 里钉住；--legacy-peer-deps 与本地安装方式保持一致。
+      - name: Install
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Build (tsc + client bundle)
+        run: npm run build
+
+      - name: Type check
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Design tokens, formatting and accessibility contracts
+        run: npm run test:design-system
+
+      - name: UI presentation contracts (not browser acceptance)
+        run: npm run test:ui-contracts
+
+      - name: Security identity and research presentation contracts
+        run: npm run test:security
+
+      - name: History identity isolation
+        run: npm run test:history
+
+      - name: Dossier tool data contracts
+        run: npm run test:dossier-data
+
+      - name: Research playbook static contracts
+        run: npm run test:research-doc
+
+      - name: Capital / holdings / sources UI contracts
+        run: npm run test:capital-ui && npm run test:holding-entry && npm run test:sources-ui
+
+      # 离线、确定性的套件；依赖外部数据源或 POSIX 文件权限的套件不在此跑。
+      - name: Policy
+        run: npm run test:policy
+
+      - name: Evidence
+        run: npm run test:evidence
+
+      - name: Capital
+        run: npm run test:capital
+
+      - name: Wealth
+        run: npm run test:wealth
+
+      - name: Investment advice
+        run: npm run test:investment
+
+      - name: Financial learning
+        run: npm run test:learn
+
+      - name: Regressions
+        run: npm run test:regressions

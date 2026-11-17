@@ -1,0 +1,285 @@
+import type { Volatile } from '@deepseek-ai/cordis'
+import Schema from '@deepseek-ai/schemastery'
+import type { PolicySource } from './policy/types.js'
+
+/**
+ * One external MCP-style data source. Three kinds share the same registry:
+ * - `mcp-http`  : a Streamable HTTP MCP server (tools bridged onto ctx.tools)
+ * - `mcp-stdio` : a stdio MCP server spawned as a child process
+ * - `cli`       : a CLI that exposes `<command> mcp list|schema|call` (e.g. yingmi-skill-cli)
+ *
+ * Tokens are never stored here in committed config. They resolve at load from,
+ * in order: `apiKeyEnv` env var, the gitignored `data/mcp-secrets.json`, then
+ * the inline `apiKey` (for frontend-managed setups).
+ */
+export interface McpSource {
+  name: string
+  kind: 'mcp-http' | 'mcp-stdio' | 'cli'
+  enabled: boolean
+  label?: string
+  /** mcp-http endpoint URL. */
+  url?: string
+  /** mcp-http auth header carrying the token, e.g. `em_api_key`. */
+  headerName?: string
+  /** mcp-stdio / cli executable. */
+  command?: string
+  /** mcp-stdio / cli arguments. */
+  args?: string[]
+  /** Env var to read the token from (highest priority). */
+  apiKeyEnv?: string
+  /** Inline token (lowest priority; prefer env or data/mcp-secrets.json). */
+  apiKey?: string
+}
+
+/** WeStock（腾讯自选股 CLI）数据源设置。 */
+export interface WestockConfig {
+  enabled: boolean
+  /** CLI 可执行文件路径；空 → 依次尝试 $WESTOCK_BIN / PATH 中的 westock。 */
+  binPath: string
+  /** 单次 CLI 调用超时（毫秒）。 */
+  timeoutMs: number
+  /** 允许 CLI 自升级（默认关闭，保持可复现的 pinned 版本）。 */
+  autoUpgrade: boolean
+  /** 并发 CLI 调用数：WeStock 是本地子进程，不必串行排队。 */
+  concurrency: number
+}
+
+/** 投研资料库（Research Vault）设置。 */
+export interface ResearchConfig {
+  enabled: boolean
+  /** 资料库根目录；空 → `<dataDir>/research`。文档落盘为 Markdown，可被宿主文件工具直接读写。 */
+  dir: string
+}
+
+/** 政策研究（Policy Intelligence）设置。 */
+export interface PolicyConfig {
+  enabled: boolean
+  /** 政策库根目录；空 → `<dataDir>/policy`。原文快照、结构化记录与历史版本都在这里。 */
+  dir: string
+  /** 单次抓取超时（毫秒）。 */
+  timeoutMs: number
+  /** 单篇文档体积上限（字节），超过即拒绝，避免把大文件塞进上下文。 */
+  maxBytes: number
+  /**
+   * 覆盖内置 allowlist 的逐项配置（按 id 合并）：通常只用来启停来源、
+   * 改入口地址或调整最小抓取间隔，不会凭空新增未校验的主机。
+   */
+  sources: Array<Partial<PolicySource> & { id: string }>
+  /** 后台自动采集：按间隔扫描已启用来源，新文档自动入库并归档进资料库。 */
+  autoCollect: PolicyAutoCollect
+}
+
+/** 个人资本账本设置。 */
+export interface CapitalConfig {
+  enabled: boolean
+  /** 账本根目录；空 → `<dataDir>/capital`。 */
+  dir: string
+  /** 默认展示币种。 */
+  baseCurrency: string
+}
+
+/** 复利/财富模拟器设置。 */
+export interface WealthConfig {
+  enabled: boolean
+  /** 方案存储目录；空 → `<dataDir>/wealth`。 */
+  dir: string
+}
+
+/** 投资建议引擎设置。 */
+export interface InvestmentConfig {
+  enabled: boolean
+  /** 建议存储目录；空 → `<dataDir>/investment`。 */
+  dir: string
+}
+
+/** 金融学习设置。 */
+export interface LearnConfig {
+  enabled: boolean
+  /** 学习进度存储目录；空 → `<dataDir>/learn`。 */
+  dir: string
+}
+
+/** 证据协作（Evidence Inbox）设置。 */
+export interface EvidenceConfig {  enabled: boolean
+  /** 证据库根目录；空 → `<dataDir>/evidence`。 */
+  dir: string
+  /** 等待超过多少天的请求自动过期（不删除，只改状态）。 */
+  expireDays: number
+  /** 抓取用户提供链接的超时（毫秒）。 */
+  timeoutMs: number
+  /** 单个文件/页面体积上限（字节）。 */
+  maxBytes: number
+}
+
+export interface PolicyAutoCollect {
+  enabled: boolean
+  /** 扫描间隔（小时），默认 24。 */
+  intervalHours: number
+  /** 每个来源每次最多抓几篇新文档，默认 5。 */
+  limitPerSource: number
+  /** 采集后自动镜像到投研资料库（kind=policy），默认开。 */
+  mirrorToVault: boolean
+  /** 启动后延迟多少秒跑第一次，默认 120（避开启动高峰）。 */
+  firstRunDelaySec: number
+}
+
+export interface Config {
+  cacheTtlSec: number
+  requestGapMs: number
+  httpTimeoutMs: number
+  /** WeStock 优先：每个能力都把 ws_* 排在最前（用户在数据源页手动排序后以用户为准）。 */
+  preferWestock: boolean
+  /** 缓存过期后仍可服务的「陈旧窗口」（秒），用于先出画面再后台刷新。 */
+  staleTtlSec: number
+  /** 日志级别：debug/info/warn/error。日志写入 `<dataDir>/logs/dsh-finance.jsonl`。 */
+  logLevel: string
+  /** WeStock CLI 数据源。 */
+  westock: WestockConfig
+  /** 投研资料库。 */
+  research: ResearchConfig
+  /** 政策研究模块（官方政策采集、去重、检索）。 */
+  policy: PolicyConfig
+  /** 证据协作（人机协作待补资料）。 */
+  evidence: EvidenceConfig
+  /** 个人资本账本（交易流水、多币种、真实收益）。 */
+  capital: CapitalConfig
+  /** 复利与财富模拟（确定性计算 + 方案保存）。 */
+  wealth: WealthConfig
+  /** 投资建议引擎（结构化建议 + 证据/反证强制校验）。 */
+  investment: InvestmentConfig
+  /** 金融学习（概念库解释 + 学习进度）。 */
+  learn: LearnConfig
+  /**
+   * Directory holding every file this plugin writes (portfolio, probe report,
+   * analysis cache, history, provider/skill policy, MCP secrets). Relative paths
+   * resolve against the package root. Point it at a per-profile directory when the
+   * same source checkout is linked into more than one dsh profile.
+   */
+  dataDir: string
+  /** Probe report file. Empty → `<dataDir>/probe-report.json`; absolute paths are used as is. */
+  probeReportPath: string
+  /** Local JSON file holding portfolio (holdings + watchlist). Empty → `<dataDir>/portfolio.json`; absolute paths are used as is. */
+  portfolioPath: string
+  /** External MCP data sources bridged into the tool set. */
+  mcpSources: McpSource[]
+  /**
+   * Finance panel open state. Declared `volatile` so the entry owns a live
+   * settings form: the Host stores it in the profile's user layer, the panel
+   * trigger reads and writes it through `ctx.configForms`, and a docked page
+   * survives reloads. Ordinary (non-volatile) fields stay composition-only.
+   */
+  panelOpen: Volatile<boolean | undefined>
+  /** Finance panel docked (side page) vs floating drawer. */
+  panelDocked: Volatile<boolean | undefined>
+}
+
+const McpSource: Schema<McpSource> = Schema.object({
+  name: Schema.string().required(),
+  kind: Schema.union(['mcp-http', 'mcp-stdio', 'cli']).default('mcp-http'),
+  enabled: Schema.boolean().default(true),
+  label: Schema.string(),
+  url: Schema.string(),
+  headerName: Schema.string(),
+  command: Schema.string(),
+  args: Schema.array(Schema.string()).default([]),
+  apiKeyEnv: Schema.string(),
+  apiKey: Schema.string(),
+})
+
+const WestockConfig: Schema<WestockConfig> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  binPath: Schema.string().default(''),
+  timeoutMs: Schema.number().default(20_000),
+  autoUpgrade: Schema.boolean().default(false),
+  concurrency: Schema.number().default(6),
+})
+
+const ResearchConfig: Schema<ResearchConfig> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  dir: Schema.string().default(''),
+})
+
+const PolicyAutoCollect: Schema<PolicyAutoCollect> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  intervalHours: Schema.number().default(24),
+  limitPerSource: Schema.number().default(5),
+  mirrorToVault: Schema.boolean().default(true),
+  firstRunDelaySec: Schema.number().default(120),
+})
+
+const PolicyConfig: Schema<PolicyConfig> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  dir: Schema.string().default(''),
+  timeoutMs: Schema.number().default(30_000),
+  maxBytes: Schema.number().default(16_000_000),
+  sources: Schema.array(Schema.object({
+    id: Schema.string().required(),
+    label: Schema.string(),
+    enabled: Schema.boolean(),
+    url: Schema.string(),
+    linkPattern: Schema.string(),
+    minIntervalSec: Schema.number(),
+    note: Schema.string(),
+  })).default([]),
+  autoCollect: PolicyAutoCollect,
+})
+
+const EvidenceConfig: Schema<EvidenceConfig> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  dir: Schema.string().default(''),
+  expireDays: Schema.number().default(30),
+  timeoutMs: Schema.number().default(20_000),
+  maxBytes: Schema.number().default(16_000_000),
+})
+
+const CapitalConfig: Schema<CapitalConfig> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  dir: Schema.string().default(''),
+  baseCurrency: Schema.string().default('CNY'),
+})
+
+const WealthConfig: Schema<WealthConfig> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  dir: Schema.string().default(''),
+})
+
+const InvestmentConfig: Schema<InvestmentConfig> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  dir: Schema.string().default(''),
+})
+
+const LearnConfig: Schema<LearnConfig> = Schema.object({
+  enabled: Schema.boolean().default(true),
+  dir: Schema.string().default(''),
+})
+
+// Inferred rather than annotated: the volatile fields output `Volatile<…>`
+// references, which is exactly the type `apply(ctx, config)` receives.
+export const Config = Schema.object({
+  cacheTtlSec: Schema.number().default(300),
+  // HTTP 源之间的最小间隔：东财/腾讯/Yahoo 共享一个串行闸门，间隔过大只会拖慢首屏。
+  requestGapMs: Schema.number().default(800),
+  httpTimeoutMs: Schema.number().default(30_000),
+  preferWestock: Schema.boolean().default(true),
+  staleTtlSec: Schema.number().default(1800),
+  logLevel: Schema.union(['debug', 'info', 'warn', 'error']).default('info'),
+  westock: WestockConfig,
+  research: ResearchConfig,
+  policy: PolicyConfig,
+  evidence: EvidenceConfig,
+  capital: CapitalConfig,
+  wealth: WealthConfig,
+  investment: InvestmentConfig,
+  learn: LearnConfig,
+  dataDir: Schema.string().default('data'),
+  probeReportPath: Schema.string().default(''),
+  portfolioPath: Schema.string().default(''),
+  mcpSources: Schema.array(McpSource).default([
+    { name: 'mx', kind: 'mcp-http', enabled: true, label: '妙想数据 (东方财富)', url: 'https://mxapi.eastmoney.com/mxds/mcp', headerName: 'em_api_key', apiKeyEnv: 'EM_API_KEY', args: [] },
+    { name: 'yingmi', kind: 'cli', enabled: true, label: '盈米 (StarGate)', command: 'yingmi-skill-cli', apiKeyEnv: 'YINGMI_API_KEY', args: [] },
+  ]),
+  panelOpen: Schema.boolean().volatile(),
+  panelDocked: Schema.boolean().volatile(),
+})
+
+export const name = 'dsh-finance'

@@ -1,0 +1,141 @@
+{
+  "name": "dsh-finance",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness finance plugin: direct market HTTP APIs, portfolio settings, model tools",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client/wrapped-bundle.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "skills",
+    "scripts",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "prepare": "npm run build",
+    "probe": "tsx scripts/probe_sources.ts --out data/probe-report.json",
+    "policy:probe": "tsx scripts/probe_policy_sources.ts",
+    "test:offline": "tsx scripts/test_offline.ts",
+    "test:avail": "tsx scripts/test_availability.ts",
+    "test:westock": "tsx scripts/test_westock.ts",
+    "westock:install": "bash scripts/install_westock.sh",
+    "web": "bash scripts/dev_web.sh",
+    "web:restart": "bash scripts/restart_web.sh",
+    "westock": "tsx scripts/westock-cli.ts",
+    "test:personal": "tsx scripts/test_personal.ts",
+    "test:policy": "tsx scripts/test_policy.ts",
+    "test:evidence": "tsx scripts/test_evidence.ts",
+    "test:capital": "tsx scripts/test_capital.ts",
+    "test:quant": "tsx scripts/test_quant.ts",
+    "test:ui": "tsx scripts/test_ui.ts",
+    "test:design-system": "tsx scripts/test_design_system.ts",
+    "test:ui-contracts": "tsx scripts/test_ui_contracts.ts",
+    "test:security": "tsx scripts/test_security_identity.ts && tsx scripts/test_security_research.ts",
+    "test:history": "tsx scripts/test_history_identity.ts",
+    "test:dossier-data": "tsx scripts/test_dossier_tool_data.ts",
+    "test:research-doc": "tsx scripts/test_research_playbook.ts",
+    "test:capital-ui": "tsx scripts/test_capital_ui.ts",
+    "test:holding-entry": "tsx scripts/test_holding_entry.ts",
+    "test:sources-ui": "tsx scripts/test_source_policy_ui.ts",
+    "test:regressions": "tsx scripts/test_regressions.ts",
+    "test:wealth": "tsx scripts/test_wealth.ts",
+    "test:investment": "tsx scripts/test_investment.ts",
+    "test:learn": "tsx scripts/test_learn.ts",
+    "demo:seed": "tsx scripts/seed_demo.ts"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.4",
+    "@deepseek-ai/dsh-host-webserver": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-skill": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-skill-filesystem": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-settings": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-system-prompt": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-web": ">=0.2.0-rc.2",
+    "@deepseek-ai/schemastery": ">=3.18.0",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings-plugins": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-settings": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-skill": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-skill-filesystem": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.10",
+    "esbuild": "^0.28.2",
+    "react": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.2.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/cordis-plugin-group": "1.0.4",
+    "@deepseek-ai/dsh-anonymous-user-id": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-atomic-write": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-bash-local": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-compaction": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-fs": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-invariants": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-mcp-client": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-output-retention": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-ptc-runtime": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-sandbox": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-scope": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-session-telemetry": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-session-title-llm": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-shell": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-spill": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-subagent-in-process-driver": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-subprocess": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-timeout": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-util-values": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-workflow": "^0.2.0-rc.2"
+  },
+  "packageManager": "pnpm@11.24.0+sha512.bd27e345e976dcb0be0b7a1228217b049a817e21b1f355c90dbe7dc46671895a8bc1e6d06c24554505ea93ea0b45f489a27ec1bfbc8de6a9659fca0f16fa0000",
+  "overrides": {
+    "@modelcontextprotocol/client": "2.2.0",
+    "fflate": "0.8.3"
+  }
+}

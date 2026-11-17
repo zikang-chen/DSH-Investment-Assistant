@@ -1,0 +1,1523 @@
+/**
+ * Direct HTTP market providers.
+ * Endpoint shapes are taken from AkShare sources (comments cite function + file);
+ * runtime does NOT import or spawn akshare.
+ */
+import { execFile } from 'node:child_process'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+import {
+  DEFAULT_UA,
+  emSecMarket,
+  httpGetJson,
+  httpGetText,
+  marketCode,
+  normalizeCode,
+  toSecuCode,
+  toTxSymbol,
+  type HttpGetOptions,
+} from './http.js'
+import { DEFAULT_INDEX_CODES, westockProviders } from './westock.js'
+import {
+  F10_ENDPOINTS,
+  isAShareCode,
+  normalizeBusinessComposition,
+  normalizeCompanySurvey,
+  normalizeCoreConcepts,
+  normalizeMainFinancials,
+  normalizePeers,
+  normalizeShareholderCount,
+  normalizeValuation,
+} from './eastmoney-f10.js'
+import { WESTOCK_CAPABILITY_PROVIDERS, WESTOCK_SPECS } from './westock-capabilities.js'
+import { normalizeFundHoldingRows, type NormalizedHolding } from '../fund-analysis.js'
+import type { Capability, KlineBar, ProviderContext, ProviderFn, SearchResult, StockInfo, StockQuote, SymbolMatch } from '../types.js'
+
+const execFileAsync = promisify(execFile)
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+export interface ProviderMeta {
+  id: string
+  capability: Capability
+  /** Upstream endpoint this provider was derived from (AkShare fn / vendor API). */
+  endpointRef: string
+  /** Args used when probing this provider standalone. */
+  sampleArgs?: Record<string, unknown>
+  call: ProviderFn
+}
+
+function opts(ctx: ProviderContext, referer?: string): HttpGetOptions {
+  return { timeoutMs: ctx.timeoutMs, signal: ctx.signal, referer }
+}
+
+function num(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : undefined
+}
+
+// Yahoo throttles cookieless requests (HTTP 429). Mirror yfinance: establish a
+// cookie + crumb session once, cache it, and retry once with a fresh session.
+interface YahooSession { cookie: string; crumb: string }
+let yahooSession: YahooSession | undefined
+let yahooSessionPending: Promise<YahooSession | undefined> | undefined
+
+async function fetchYahooSession(ctx: ProviderContext): Promise<YahooSession | undefined> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(new Error('yahoo session timeout')), ctx.timeoutMs)
+  try {
+    const home = await fetch('https://fc.yahoo.com/', { headers: { 'User-Agent': DEFAULT_UA }, signal: ctrl.signal })
+    const cookie = (home.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ')
+    if (!cookie) return undefined
+    const res = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+      headers: { 'User-Agent': DEFAULT_UA, Cookie: cookie },
+      signal: ctrl.signal,
+    })
+    const crumb = (await res.text()).trim()
+    if (!crumb || crumb.includes('<')) return undefined
+    return { cookie, crumb }
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function yahooSessionGet(ctx: ProviderContext, refresh = false): Promise<YahooSession | undefined> {
+  if (refresh) yahooSession = undefined
+  if (yahooSession) return yahooSession
+  yahooSessionPending ??= fetchYahooSession(ctx).then((s) => {
+    yahooSession = s
+    yahooSessionPending = undefined
+    return s
+  })
+  return yahooSessionPending
+}
+
+async function yahooChart(symbol: string, params: Record<string, string | number>, ctx: ProviderContext) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`
+  const base: HttpGetOptions = { timeoutMs: ctx.timeoutMs, signal: ctx.signal, headers: { Accept: 'application/json' } }
+  let lastErr: unknown
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const session = await yahooSessionGet(ctx, attempt > 0)
+    const headers = { ...base.headers, ...(session ? { Cookie: session.cookie } : {}) }
+    const merged = session ? { ...params, crumb: session.crumb } : params
+    try {
+      return await httpGetJson<YahooChart>(url, merged, { ...base, headers })
+    } catch (err) {
+      lastErr = err
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('yahoo chart failed')
+}
+
+interface YahooChart {
+  chart?: {
+    error?: { description?: string } | null
+    result?: Array<{
+      meta?: Record<string, unknown>
+      timestamp?: number[]
+      indicators?: { quote?: Array<Record<string, Array<number | null>>> }
+    }>
+  }
+}
+
+/**
+ * Source: akshare.stock_feature.stock_hist_em.stock_zh_a_spot_em
+ * (clist first page only — avoid full-market crawl)
+ */
+async function emAClist(_args: Record<string, unknown>, ctx: ProviderContext) {
+  const json = await httpGetJson<{ data?: { diff?: Array<Record<string, unknown>>; total?: number } }>(
+    'https://push2.eastmoney.com/api/qt/clist/get',
+    {
+      pn: '1',
+      pz: '100',
+      po: '1',
+      np: '1',
+      ut: 'bd1d9ddb04089700cf9c27f6f7426281',
+      fltt: '2',
+      invt: '2',
+      fid: 'f12',
+      fs: 'm:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048',
+      fields: 'f12,f14,f2,f3,f4',
+    },
+    opts(ctx, 'https://quote.eastmoney.com/center/gridlist.html'),
+  )
+  const diff = json.data?.diff ?? []
+  const rows = diff.map((d) => ({
+    code: String(d.f12 ?? ''),
+    name: String(d.f14 ?? ''),
+    price: num(d.f2),
+    changePercent: num(d.f3),
+    change: num(d.f4),
+  }))
+  return { rows, sampleKeys: rows[0] ? Object.keys(rows[0]) : [] }
+}
+
+// Shared eastmoney /qt/stock/get quote — works for any market once given a
+// secid (`{market}.{code}`, e.g. 1.600519 沪A, 0.000001 深A, 116.00700 港股,
+// 105.AAPL 美股). Source: stock_bid_ask_em / stock_individual_info_em.
+const EM_QUOTE_FIELDS = 'f43,f57,f58,f169,f170,f46,f44,f45,f60,f47,f48'
+
+async function emQuoteBySecid(secid: string, ctx: ProviderContext, referer?: string): Promise<StockQuote> {
+  const json = await httpGetJson<{ data?: Record<string, unknown> }>(
+    'https://push2.eastmoney.com/api/qt/stock/get',
+    { fltt: '2', invt: '2', fields: EM_QUOTE_FIELDS, secid },
+    opts(ctx, referer ?? 'https://quote.eastmoney.com/'),
+  )
+  const d = json.data
+  if (!d) throw new Error('empty stock/get data')
+  return {
+    code: String(d.f57 ?? secid),
+    name: d.f58 != null ? String(d.f58) : undefined,
+    price: num(d.f43),
+    change: num(d.f169),
+    changePercent: num(d.f170),
+    raw: d,
+  }
+}
+
+async function emStockGet(args: Record<string, unknown>, ctx: ProviderContext) {
+  const raw = String(args.code ?? '600519')
+  const code = normalizeCode(raw)
+  const referer = `https://quote.eastmoney.com/${emSecMarket(raw) === 1 ? 'sh' : 'sz'}${code}.html`
+  const quote = await emQuoteBySecid(`${emSecMarket(raw)}.${code}`, ctx, referer)
+  return { rows: [quote], data: quote, sampleKeys: Object.keys(quote) }
+}
+
+/** Alias provider id for individual info — same endpoint, probe separately. */
+async function emIndividualInfo(args: Record<string, unknown>, ctx: ProviderContext) {
+  return emStockGet(args, ctx)
+}
+
+// Shared eastmoney push2his kline — works for any market via secid.
+// Source: stock_zh_a_hist / stock_hk_hist / stock_us_hist (same endpoint).
+async function emKlineBySecid(secid: string, args: Record<string, unknown>, ctx: ProviderContext): Promise<KlineBar[]> {
+  const period = String(args.period ?? 'daily')
+  const periodMap: Record<string, string> = { daily: '101', week: '102', weekly: '102', month: '103', monthly: '103' }
+  const adjust = String(args.adjust ?? 'qfq')
+  const adjustMap: Record<string, string> = { qfq: '1', hfq: '2', '': '0' }
+  const end = String(args.end ?? new Date().toISOString().slice(0, 10)).replace(/-/g, '')
+  const start = String(
+    args.start ?? new Date(Date.now() - Number(args.days ?? 60) * 86400000).toISOString().slice(0, 10),
+  ).replace(/-/g, '')
+
+  const json = await httpGetJson<{ data?: { klines?: string[] } }>(
+    'https://push2his.eastmoney.com/api/qt/stock/kline/get',
+    {
+      fields1: 'f1,f2,f3,f4,f5,f6',
+      fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f116',
+      ut: '7eea3edcaed734bea9cbfc24409ed989',
+      klt: periodMap[period] ?? '101',
+      fqt: adjustMap[adjust] ?? '1',
+      secid,
+      beg: start,
+      end,
+    },
+    opts(ctx, 'https://quote.eastmoney.com/'),
+  )
+  return (json.data?.klines ?? []).map((line) => {
+    const [date, open, close, high, low, volume] = line.split(',')
+    return { date: date!, open: Number(open), close: Number(close), high: Number(high), low: Number(low), volume: Number(volume) }
+  })
+}
+
+async function emKline(args: Record<string, unknown>, ctx: ProviderContext) {
+  const raw = String(args.code ?? '600519')
+  const code = normalizeCode(raw)
+  // 指数必须保留 sh 前缀语义：marketCode('000300') 会误判深市，基准 sh000300 依赖 1.000300。
+  const bars = await emKlineBySecid(`${emSecMarket(raw)}.${code}`, args, ctx)
+  return { rows: bars, sampleKeys: bars[0] ? Object.keys(bars[0]) : [] }
+}
+
+// Shared tencent kline — symbol is `sh600519`/`sz000001` (A) or `hk00700` (HK).
+// Source: akshare stock_zh_a_hist_tx (same endpoint serves HK via hk-prefix).
+async function txKlineBySymbol(symbol: string, args: Record<string, unknown>, ctx: ProviderContext): Promise<KlineBar[]> {
+  const year = new Date().getFullYear()
+  const adjust = String(args.adjust ?? 'qfq')
+  const text = await httpGetText(
+    'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get',
+    { _var: `kline_day${adjust}${year}`, param: `${symbol},day,${year}-01-01,${year}-12-31,640,${adjust}`, r: '0.82' },
+    opts(ctx, 'https://gu.qq.com/'),
+  )
+  const jsonStart = text.indexOf('={')
+  if (jsonStart < 0) throw new Error('tencent kline: unexpected payload')
+  const payload = JSON.parse(text.slice(jsonStart + 1)) as {
+    data?: Record<string, { day?: string[][]; qfqday?: string[][]; hfqday?: string[][] }>
+  }
+  const block = payload.data?.[symbol]
+  const day = block?.day ?? block?.qfqday ?? block?.hfqday
+  if (!day?.length) throw new Error('tencent kline: empty day series')
+  return day.map((row) => ({
+    date: String(row[0]),
+    open: Number(row[1]),
+    close: Number(row[2]),
+    high: Number(row[3]),
+    low: Number(row[4]),
+    volume: Number(row[5]),
+  }))
+}
+
+async function txKline(args: Record<string, unknown>, ctx: ProviderContext) {
+  const raw = String(args.code ?? '600519').trim()
+  // 显式 sh/sz/hk 前缀原样保留（toTxSymbol 的首字符启发式会把 sh000300 错判成 sz000300）。
+  const symbol = /^(sh|sz|bj|hk)[0-9]/i.test(raw) ? raw.toLowerCase() : toTxSymbol(normalizeCode(raw))
+  const bars = await txKlineBySymbol(symbol, args, ctx)
+  return { rows: bars, sampleKeys: bars[0] ? Object.keys(bars[0]) : [] }
+}
+
+/**
+ * Source: akshare.index.index_stock_zh.__stock_zh_main_spot_em
+ * (沪深重要指数 — small list, good for probe)
+ */
+async function emIndexMain(_args: Record<string, unknown>, ctx: ProviderContext) {
+  const json = await httpGetJson<{ data?: { diff?: Array<Record<string, unknown>> } }>(
+    'https://push2.eastmoney.com/api/qt/clist/get',
+    {
+      pn: '1',
+      pz: '100',
+      po: '1',
+      np: '1',
+      ut: 'bd1d9ddb04089700cf9c27f6f7426281',
+      fltt: '2',
+      invt: '2',
+      dect: '1',
+      wbp2u: '|0|0|0|web',
+      fid: '',
+      fs: 'b:MK0010',
+      fields: 'f2,f3,f4,f12,f14',
+    },
+    opts(ctx, 'https://quote.eastmoney.com/center/hszs.html'),
+  )
+  const rows = (json.data?.diff ?? []).map((d) => ({
+    code: String(d.f12 ?? ''),
+    name: String(d.f14 ?? ''),
+    price: num(d.f2),
+    changePercent: num(d.f3),
+    change: num(d.f4),
+  }))
+  return { rows, sampleKeys: rows[0] ? Object.keys(rows[0]) : [] }
+}
+
+/**
+ * Source: akshare.stock_fundamental.stock_finance_sina.stock_financial_analysis_indicator_em
+ * URL: https://datacenter.eastmoney.com/securities/api/data/get
+ */
+async function emMainFinadata(args: Record<string, unknown>, ctx: ProviderContext) {
+  const code = normalizeCode(String(args.code ?? '600519'))
+  const secu = toSecuCode(code)
+  const json = await httpGetJson<{ result?: { data?: Array<Record<string, unknown>> } }>(
+    'https://datacenter.eastmoney.com/securities/api/data/get',
+    {
+      type: 'RPT_F10_FINANCE_MAINFINADATA',
+      sty: 'APP_F10_MAINFINADATA',
+      quoteColumns: '',
+      filter: `(SECUCODE="${secu}")`,
+      p: '1',
+      ps: '5',
+      sr: '-1',
+      st: 'REPORT_DATE',
+      source: 'HSF10',
+      client: 'PC',
+    },
+    opts(ctx, 'https://emweb.securities.eastmoney.com/'),
+  )
+  const rows = json.result?.data ?? []
+  if (!rows.length) throw new Error('empty financial main data')
+  return { rows, sampleKeys: Object.keys(rows[0]!) }
+}
+
+// ---- T4 东财 F10 七维（仅 A 股）----
+// 规范化/口径在 eastmoney-f10.ts（纯函数、fixture 固定契约）；这里只做抓取。
+// 上游契约在本环境无法线上核实（TLS 被中断），结果带 contractVerified=false。
+
+function assertF10Code(code: unknown): string {
+  const c = normalizeCode(String(code ?? ''))
+  if (!isAShareCode(c)) throw new Error(`F10 仅支持 A 股（含北交所），不支持：${code}`)
+  return c
+}
+
+async function emF10PageAjax(moduleUrl: string, code: unknown, ctx: ProviderContext): Promise<unknown> {
+  const secu = toSecuCode(assertF10Code(code))
+  return httpGetJson<Record<string, unknown>>(
+    moduleUrl,
+    { SECUCODE: secu },
+    opts(ctx, 'https://emweb.securities.eastmoney.com/'),
+  )
+}
+
+async function emF10Survey(args: Record<string, unknown>, ctx: ProviderContext) {
+  const data = normalizeCompanySurvey(await emF10PageAjax(F10_ENDPOINTS.companySurvey, args.code, ctx))
+  return { data, sampleKeys: Object.keys(data) }
+}
+
+async function emF10Business(args: Record<string, unknown>, ctx: ProviderContext) {
+  const data = normalizeBusinessComposition(await emF10PageAjax(F10_ENDPOINTS.businessAnalysis, args.code, ctx))
+  return { data, sampleKeys: Object.keys(data) }
+}
+
+async function emF10Concepts(args: Record<string, unknown>, ctx: ProviderContext) {
+  const data = normalizeCoreConcepts(await emF10PageAjax(F10_ENDPOINTS.coreConception, args.code, ctx))
+  return { data, sampleKeys: Object.keys(data) }
+}
+
+async function emF10Holders(args: Record<string, unknown>, ctx: ProviderContext) {
+  const data = normalizeShareholderCount(await emF10PageAjax(F10_ENDPOINTS.shareholderResearch, args.code, ctx))
+  return { data, sampleKeys: Object.keys(data) }
+}
+
+async function emF10Financials(args: Record<string, unknown>, ctx: ProviderContext) {
+  const secu = toSecuCode(assertF10Code(args.code))
+  const ps = Math.min(Math.max(Number(args.pageSize ?? 14), 1), 50)
+  const json = await httpGetJson<{ result?: { data?: Array<Record<string, unknown>> } }>(
+    F10_ENDPOINTS.mainFinancials,
+    {
+      type: 'RPT_F10_FINANCE_MAINFINADATA',
+      sty: 'APP_F10_MAINFINADATA',
+      filter: `(SECUCODE="${secu}")`,
+      p: '1', ps: String(ps), sr: '-1', st: 'REPORT_DATE',
+      source: 'HSF10', client: 'PC',
+    },
+    opts(ctx, 'https://emweb.securities.eastmoney.com/'),
+  )
+  const data = normalizeMainFinancials({ result: json.result })
+  return { data, sampleKeys: Object.keys(data) }
+}
+
+async function emF10Valuation(args: Record<string, unknown>, ctx: ProviderContext) {
+  const secu = toSecuCode(assertF10Code(args.code))
+  const json = await httpGetJson<{ result?: { data?: Array<Record<string, unknown>> } }>(
+    F10_ENDPOINTS.valuation,
+    {
+      reportName: 'RPT_VALUEANALYSIS_DET',
+      columns: 'ALL',
+      filter: `(SECUCODE="${secu}")`,
+      pageNumber: '1', pageSize: String(Math.min(Math.max(Number(args.pageSize ?? 500), 10), 2000)),
+      sortColumns: 'TRADE_DATE', sortTypes: '-1',
+      source: 'WEB', client: 'WEB',
+    },
+    opts(ctx, 'https://data.eastmoney.com/'),
+  )
+  const data = normalizeValuation({ result: json.result }, {
+    windowDays: Number(args.windowDays ?? 1825),
+    minSamples: Number(args.minSamples ?? 60),
+  })
+  return { data, sampleKeys: Object.keys(data) }
+}
+
+async function emF10Peers(args: Record<string, unknown>, ctx: ProviderContext) {
+  // 上游同行接口未核实：URL 来自 F10 页面结构推断，解析全部防御式。
+  const data = normalizePeers(await emF10PageAjax(F10_ENDPOINTS.peerComparison, args.code, ctx))
+  return { data, sampleKeys: Object.keys(data) }
+}
+
+/**
+ * Source: akshare.stock.stock_board_industry_em.stock_board_industry_name_em
+ * URL: https://17.push2.eastmoney.com/api/qt/clist/get (first page)
+ */
+async function emIndustryBoard(args: Record<string, unknown>, ctx: ProviderContext) {
+  const json = await httpGetJson<{ data?: { diff?: Array<Record<string, unknown>> } }>(
+    'https://push2.eastmoney.com/api/qt/clist/get',
+    {
+      pn: '1',
+      pz: '50',
+      po: String(args.order === 'asc' ? '0' : '1'), // 1=涨幅榜, 0=跌幅榜
+      np: '1',
+      ut: 'bd1d9ddb04089700cf9c27f6f7426281',
+      fltt: '2',
+      invt: '2',
+      fid: 'f3',
+      fs: 'm:90 t:2 f:!50',
+      fields: 'f2,f3,f4,f12,f14',
+    },
+    opts(ctx, 'https://quote.eastmoney.com/center/boardlist.html'),
+  )
+  const rows = (json.data?.diff ?? []).map((d) => ({
+    code: String(d.f12 ?? ''),
+    name: String(d.f14 ?? ''),
+    price: num(d.f2),
+    changePercent: num(d.f3),
+    change: num(d.f4),
+  }))
+  if (!rows.length) throw new Error('empty industry board')
+  return { rows, sampleKeys: Object.keys(rows[0]!) }
+}
+
+// ---- 通用：证券代码解析（东财 suggest，跨 A股/港股/美股/名称）----
+// Source: eastmoney searchapi suggest (used internally by many akshare fns).
+const secidCache = new Map<string, SymbolMatch | null>()
+
+async function emSuggestMatches(keyword: string, ctx: ProviderContext, limit = 8): Promise<SymbolMatch[]> {
+  const json = await httpGetJson<{ QuotationCodeTable?: { Data?: Array<Record<string, unknown>> } }>(
+    'https://searchapi.eastmoney.com/api/suggest/get',
+    { input: keyword, type: '14', count: String(limit), token: 'D43BF722C8E33BDC906FB84D85E326E8' },
+    opts(ctx),
+  )
+  return (json.QuotationCodeTable?.Data ?? [])
+    .filter((d) => d.QuoteID)
+    .map((d) => ({ code: String(d.Code ?? ''), name: String(d.Name ?? ''), secid: String(d.QuoteID), market: String(d.SecurityTypeName ?? '') }))
+}
+
+async function emResolveSecid(keyword: string, ctx: ProviderContext, filter?: (m: SymbolMatch) => boolean): Promise<SymbolMatch | undefined> {
+  const key = `${keyword.trim()}|${filter ? 'f' : ''}`
+  if (secidCache.has(key)) return secidCache.get(key) ?? undefined
+  const matches = await emSuggestMatches(keyword.trim(), ctx)
+  const pick = filter ? matches.find(filter) : matches[0]
+  secidCache.set(key, pick ?? null)
+  return pick
+}
+
+async function emSuggest(args: Record<string, unknown>, ctx: ProviderContext) {
+  const kw = String(args.query ?? args.code ?? '').trim()
+  if (!kw) throw new Error('empty search query')
+  const rawLimit = Number(args.limit ?? 8)
+  const limit = Number.isFinite(rawLimit) ? Math.min(50, Math.max(1, Math.trunc(rawLimit))) : 8
+  const matches = await emSuggestMatches(kw, ctx, limit)
+  if (!matches.length) throw new Error(`no symbol match for ${kw}`)
+  return { rows: matches, data: matches, sampleKeys: Object.keys(matches[0]!) }
+}
+
+// ---- 港股（东财，secid 市场号 116）----
+function hkCode(code: string): string {
+  return String(code).trim().replace(/\D/g, '').padStart(5, '0').slice(-5)
+}
+
+/** Source: akshare stock_bid_ask_em (HK secid 116). */
+async function emHkQuote(args: Record<string, unknown>, ctx: ProviderContext) {
+  const code = hkCode(String(args.code ?? '00700'))
+  const quote = await emQuoteBySecid(`116.${code}`, ctx, `https://quote.eastmoney.com/hk/${code}.html`)
+  return { rows: [quote], data: quote, sampleKeys: Object.keys(quote) }
+}
+
+/** Source: akshare stock_hk_hist (HK secid 116). */
+async function emHkKline(args: Record<string, unknown>, ctx: ProviderContext) {
+  const code = hkCode(String(args.code ?? '00700'))
+  const bars = await emKlineBySecid(`116.${code}`, args, ctx)
+  return { rows: bars, sampleKeys: bars[0] ? Object.keys(bars[0]) : [] }
+}
+
+// 港股腾讯兜底：gtimg 实时行情（GBK）+ qq 日 K（hk 前缀）。
+async function txHkQuote(args: Record<string, unknown>, ctx: ProviderContext) {
+  const code = hkCode(String(args.code ?? '00700'))
+  const text = await httpGetText('https://qt.gtimg.cn/q=hk' + code, {}, { ...opts(ctx, 'https://gu.qq.com/'), encoding: 'gbk' })
+  const m = text.match(/="([^"]*)"/)
+  if (!m) throw new Error('tencent hk quote: unexpected payload')
+  const f = m[1]!.split('~')
+  const price = num(f[3])
+  if (price == null) throw new Error('tencent hk quote: no price')
+  const quote: StockQuote = {
+    code: String(f[2] || code),
+    name: f[1] || undefined,
+    price,
+    change: num(f[31]),
+    changePercent: num(f[32]),
+    raw: { fields: f },
+  }
+  return { rows: [quote], data: quote, sampleKeys: Object.keys(quote) }
+}
+
+async function txHkKline(args: Record<string, unknown>, ctx: ProviderContext) {
+  const bars = await txKlineBySymbol('hk' + hkCode(String(args.code ?? '00700')), args, ctx)
+  return { rows: bars, sampleKeys: bars[0] ? Object.keys(bars[0]) : [] }
+}
+
+/** Source: akshare stock_hk_spot_em (港股实时行情列表，clist m:128 首页). */
+async function emHkClist(_args: Record<string, unknown>, ctx: ProviderContext) {
+  const json = await httpGetJson<{ data?: { diff?: Array<Record<string, unknown>> } }>(
+    'https://push2.eastmoney.com/api/qt/clist/get',
+    {
+      pn: '1',
+      pz: '50',
+      po: '1',
+      np: '1',
+      ut: 'bd1d9ddb04089700cf9c27f6f7426281',
+      fltt: '2',
+      invt: '2',
+      fid: 'f3',
+      fs: 'm:128 t:3,m:128 t:4,m:128 t:1,m:128 t:2',
+      fields: 'f12,f14,f2,f3,f4',
+    },
+    opts(ctx, 'https://quote.eastmoney.com/center/gridlist.html#hk_stocks'),
+  )
+  const rows = (json.data?.diff ?? []).map((d) => ({
+    code: String(d.f12 ?? ''),
+    name: String(d.f14 ?? ''),
+    price: num(d.f2),
+    changePercent: num(d.f3),
+    change: num(d.f4),
+  }))
+  if (!rows.length) throw new Error('empty hk list')
+  return { rows, sampleKeys: Object.keys(rows[0]!) }
+}
+
+// ---- 美股（东财 fallback；Yahoo 限流时经此路）----
+/** Source: akshare stock_us_spot_em/stock_us_hist — ticker resolved to secid. */
+async function emUsQuote(args: Record<string, unknown>, ctx: ProviderContext) {
+  const kw = String(args.code ?? 'AAPL').trim()
+  const m = await emResolveSecid(kw, ctx, (x) => x.market === '美股')
+  if (!m) throw new Error(`us symbol not resolved: ${kw}`)
+  const quote = await emQuoteBySecid(m.secid, ctx, `https://quote.eastmoney.com/us/${m.code}.html`)
+  quote.name ??= m.name
+  return { rows: [quote], data: quote, sampleKeys: Object.keys(quote) }
+}
+
+async function emUsKline(args: Record<string, unknown>, ctx: ProviderContext) {
+  const kw = String(args.code ?? 'AAPL').trim()
+  const m = await emResolveSecid(kw, ctx, (x) => x.market === '美股')
+  if (!m) throw new Error(`us symbol not resolved: ${kw}`)
+  const bars = await emKlineBySecid(m.secid, args, ctx)
+  return { rows: bars, sampleKeys: bars[0] ? Object.keys(bars[0]) : [] }
+}
+
+// ---- 个股档案（东财，行情 + 市值字段；跨市场经 suggest 解析）----
+const EM_INFO_FIELDS = 'f43,f57,f58,f60,f46,f44,f45,f47,f48,f116,f117,f84,f85,f169,f170'
+
+/** Source: akshare stock_individual_info_em (基本面字段: 市值/股本等). */
+async function emStockInfo(args: Record<string, unknown>, ctx: ProviderContext) {
+  const kw = String(args.code ?? args.query ?? '600519').trim()
+  const m = await emResolveSecid(kw, ctx)
+  const secid = m?.secid ?? `${marketCode(normalizeCode(kw))}.${normalizeCode(kw)}`
+  const json = await httpGetJson<{ data?: Record<string, unknown> }>(
+    'https://push2.eastmoney.com/api/qt/stock/get',
+    { fltt: '2', invt: '2', fields: EM_INFO_FIELDS, secid },
+    opts(ctx),
+  )
+  const d = json.data
+  if (!d) throw new Error('empty stock info')
+  const info: StockInfo = {
+    code: String(d.f57 ?? m?.code ?? kw),
+    name: d.f58 != null ? String(d.f58) : m?.name,
+    market: m?.market,
+    price: num(d.f43),
+    change: num(d.f169),
+    changePercent: num(d.f170),
+    prevClose: num(d.f60),
+    open: num(d.f46),
+    high: num(d.f44),
+    low: num(d.f45),
+    volume: num(d.f47),
+    turnover: num(d.f48),
+    marketCap: num(d.f116),
+    floatMarketCap: num(d.f117),
+    totalShares: num(d.f84),
+    floatShares: num(d.f85),
+  }
+  return { rows: [info], data: info, sampleKeys: Object.keys(info) }
+}
+
+/**
+ * Source: Yahoo Finance chart API v8 (free, no key).
+ * URL: https://query1.finance.yahoo.com/v8/finance/chart/{symbol}
+ */
+async function yahooQuote(args: Record<string, unknown>, ctx: ProviderContext) {
+  const symbol = String(args.code ?? 'AAPL').trim().toUpperCase()
+  const json = await yahooChart(symbol, { range: '1d', interval: '1d' }, ctx)
+  const meta = json.chart?.result?.[0]?.meta
+  if (!meta) throw new Error(json.chart?.error?.description ?? 'empty yahoo chart')
+  const price = num(meta.regularMarketPrice)
+  const prev = num(meta.chartPreviousClose) ?? num(meta.previousClose)
+  const quote: StockQuote = {
+    code: String(meta.symbol ?? symbol),
+    name: meta.shortName != null ? String(meta.shortName) : (meta.longName != null ? String(meta.longName) : undefined),
+    price,
+    change: price != null && prev != null ? Number((price - prev).toFixed(4)) : undefined,
+    changePercent: price != null && prev ? Number((((price - prev) / prev) * 100).toFixed(4)) : undefined,
+    raw: meta,
+  }
+  return { rows: [quote], data: quote, sampleKeys: Object.keys(quote) }
+}
+
+/** Source: Yahoo Finance chart API v8 (timestamp + OHLCV series). */
+async function yahooKline(args: Record<string, unknown>, ctx: ProviderContext) {
+  const symbol = String(args.code ?? 'AAPL').trim().toUpperCase()
+  const period = String(args.period ?? 'daily')
+  const intervalMap: Record<string, string> = { daily: '1d', week: '1wk', weekly: '1wk', month: '1mo', monthly: '1mo' }
+  const now = Math.floor(Date.now() / 1000)
+  const period2 = args.end ? Math.floor(new Date(String(args.end)).getTime() / 1000) : now
+  const period1 = args.start
+    ? Math.floor(new Date(String(args.start)).getTime() / 1000)
+    : period2 - Number(args.days ?? 120) * 86400
+  const json = await yahooChart(symbol, { period1, period2, interval: intervalMap[period] ?? '1d' }, ctx)
+  const result = json.chart?.result?.[0]
+  const ts = result?.timestamp ?? []
+  const q = result?.indicators?.quote?.[0] ?? {}
+  const bars: KlineBar[] = ts.map((t, i) => ({
+    date: new Date(t * 1000).toISOString().slice(0, 10),
+    open: Number(q.open?.[i]),
+    close: Number(q.close?.[i]),
+    high: Number(q.high?.[i]),
+    low: Number(q.low?.[i]),
+    volume: Number(q.volume?.[i]),
+  })).filter((b) => Number.isFinite(b.close))
+  if (!bars.length) throw new Error('empty yahoo kline')
+  return { rows: bars, sampleKeys: Object.keys(bars[0]!) }
+}
+
+function searchQuery(args: Record<string, unknown>): string {
+  const query = String(args.query ?? args.q ?? '').trim()
+  if (!query) throw new Error('empty search query')
+  return query
+}
+
+/** 解析 Bing RSS（纯函数，可离线测试）：提取 title/link/description 并还原实体转义。 */
+/** 还原 XML 文本：CDATA 包裹 + 实体转义（Bing RSS 两者都会出现）。 */
+function decodeXmlText(s: string): string {
+  return s
+    .replace(/^<!\[CDATA\[/, '')
+    .replace(/\]\]>$/, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&')
+    .trim()
+}
+
+/** 取一个 XML 标签的文本（不用正则转义，避免 `\s` 之类的转义陷阱）。 */
+function pickXmlTag(item: string, tag: string): string {
+  const open = `<${tag}>`
+  const close = `</${tag}>`
+  const a = item.indexOf(open)
+  if (a < 0) return ''
+  const from = a + open.length
+  const b = item.indexOf(close, from)
+  return decodeXmlText(b < 0 ? item.slice(from) : item.slice(from, b))
+}
+
+/** 解析 Bing RSS（纯函数，可离线测试）：提取 title/link/description。 */
+export function parseBingRss(xml: string, max = 10): SearchResult[] {
+  const limit = Math.max(1, max)
+  const out: SearchResult[] = []
+  for (const chunk of xml.split('<item>').slice(1)) {
+    const end = chunk.indexOf('</item>')
+    const item = end >= 0 ? chunk.slice(0, end) : chunk
+    const title = pickXmlTag(item, 'title')
+    const url = pickXmlTag(item, 'link')
+    if (!title || !url) continue
+    out.push({ title, url, snippet: pickXmlTag(item, 'description').slice(0, 300), source: 'Bing' })
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+/**
+ * 回补数据源：Node 原生网页搜索（Bing RSS）。
+ * 之前唯一实现是 Python `ddgs`，但宿主机没装（pip 依赖不可控），web_search 长期不可用。
+ * Bing 的 `&format=rss` 输出是稳定的 XML，Node 侧直接解析即可，零安装成本。
+ */
+async function rssWebSearch(args: Record<string, unknown>, ctx: ProviderContext) {
+  const query = searchQuery(args)
+  const max = Number(args.size ?? args.maxResults ?? 10)
+  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&format=rss&count=${Math.min(30, Math.max(1, max))}`
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+      Accept: 'application/rss+xml, application/xml;q=0.9, */*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    },
+    signal: ctx.signal,
+  })
+  if (!res.ok) throw new Error(`bing rss http ${res.status}`)
+  const results = parseBingRss(await res.text(), max)
+  if (!results.length) throw new Error('bing rss: empty')
+  return { rows: results, data: results, sampleKeys: Object.keys(results[0]!) }
+}
+
+/**
+ * Python ddgs + primp → Bing/Google/Yandex (no DuckDuckGo)。
+ * 作为可选增强：装了 ddgs 就能拿到多引擎结果，没装也不影响搜索能力。
+ */
+async function pyWebSearch(args: Record<string, unknown>, ctx: ProviderContext) {
+  const query = searchQuery(args)
+  const script = path.join(PKG_ROOT, 'scripts', 'web_search.py')
+  const { stdout } = await execFileAsync('python3', [script, query], {
+    timeout: ctx.timeoutMs,
+    signal: ctx.signal,
+    maxBuffer: 2 * 1024 * 1024,
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+  })
+  const parsed = JSON.parse(stdout.trim()) as { results?: SearchResult[]; error?: string }
+  if (parsed.error) throw new Error(parsed.error)
+  const results = (parsed.results ?? []).filter((r) => r.title)
+  if (!results.length) throw new Error('py web search: empty')
+  return { rows: results, data: results, sampleKeys: Object.keys(results[0]!) }
+}
+
+// ---- 基金（东财 pingzhongdata：净值走势 + 画像数据，免费直连）----
+interface FundData {
+  name?: string
+  navTrend: Array<{ date: string; nav: number }>
+  profile: Record<string, unknown>
+}
+// 净值与画像都在 pingzhongdata.js（数百 KB）里：净值日频更新、画像更慢，5 分钟
+// 缓存足够新；同码并发请求合并成一个 promise，避免多基金持仓首屏重复拉同一文件。
+const FUND_DATA_TTL_MS = 5 * 60_000
+const fundCache = new Map<string, { at: number; data: Promise<FundData> }>()
+
+function fundCode(code: string): string {
+  return String(code).replace(/\D/g, '').padStart(6, '0').slice(-6)
+}
+
+function parseFundVariable<T>(text: string, name: string): T | undefined {
+  const match = text.match(new RegExp(`${name}\\s*=\\s*([\\[{][\\s\\S]*?);`))
+  if (!match) return undefined
+  try {
+    return JSON.parse(match[1]!) as T
+  } catch {
+    return undefined
+  }
+}
+
+// Source: fund.eastmoney.com pingzhongdata (Data_netWorthTrend + fS_name).
+function emFundData(code: string, ctx: ProviderContext): Promise<FundData> {
+  const c = fundCode(code)
+  const hit = fundCache.get(c)
+  if (hit && Date.now() - hit.at < FUND_DATA_TTL_MS) return hit.data
+  const pending = (async (): Promise<FundData> => {
+    const text = await httpGetText(`https://fund.eastmoney.com/pingzhongdata/${c}.js`, {}, opts(ctx, 'https://fund.eastmoney.com/'))
+    const nameM = text.match(/fS_name\s*=\s*"([^"]*)"/)
+    const trendM = text.match(/Data_netWorthTrend\s*=\s*(\[[\s\S]*?\])\s*;/)
+    const navTrend: Array<{ date: string; nav: number }> = []
+    if (trendM) {
+      const arr = JSON.parse(trendM[1]!) as Array<{ x: number; y: number }>
+      for (const p of arr) {
+        const nav = num(p.y)
+        if (nav != null) navTrend.push({ date: new Date(p.x).toISOString().slice(0, 10), nav })
+      }
+    }
+    if (!navTrend.length) throw new Error(`fund ${c}: empty nav trend`)
+    const profile: Record<string, unknown> = {}
+    const profileKeys = [
+      'Data_assetAllocation',
+      'Data_buySedemption',
+      'Data_currentFundManager',
+      'Data_fluctuationScale',
+      'Data_holderStructure',
+      'Data_performanceEvaluation',
+      'Data_rateInSimilarPersent',
+      'Data_rateInSimilarType',
+    ]
+    for (const key of profileKeys) {
+      const value = parseFundVariable<unknown>(text, key)
+      if (value !== undefined) {
+        profile[key.slice('Data_'.length)] = Array.isArray(value) ? value.slice(-180) : value
+      }
+    }
+    const grandTotal = parseFundVariable<unknown[]>(text, 'Data_grandTotal')
+    if (grandTotal) profile.grandTotal = grandTotal.slice(-180)
+    return { name: nameM?.[1] || undefined, navTrend, profile }
+  })()
+  fundCache.set(c, { at: Date.now(), data: pending })
+  // 失败不缓存：踢掉后下一个调用方重试（并发中的调用方共享同一错误）。
+  pending.catch(() => {
+    if (fundCache.get(c)?.data === pending) fundCache.delete(c)
+  })
+  return pending
+}
+
+async function emFundQuote(args: Record<string, unknown>, ctx: ProviderContext) {
+  const code = fundCode(String(args.code ?? ''))
+  const fd = await emFundData(code, ctx)
+  const last = fd.navTrend.at(-1)!
+  const prev = fd.navTrend.at(-2)
+  const quote: StockQuote = {
+    code,
+    name: fd.name,
+    price: last.nav,
+    change: prev ? Number((last.nav - prev.nav).toFixed(4)) : undefined,
+    changePercent: prev && prev.nav ? Number((((last.nav - prev.nav) / prev.nav) * 100).toFixed(2)) : undefined,
+    // 净值日期 = 数据时点：面板据此标「T+1 待更新」，避免把昨日净值当实时价。
+    asOf: last.date,
+    raw: { navDate: last.date, profile: fd.profile },
+  }
+  return { rows: [quote], data: quote, sampleKeys: Object.keys(quote) }
+}
+
+async function emFundKline(args: Record<string, unknown>, ctx: ProviderContext) {
+  const fd = await emFundData(String(args.code ?? ''), ctx)
+  // 净单位置无成交量：volume=0 仅作占位，必须标记 volumeMissing，不能当成零成交。
+  const bars: KlineBar[] = fd.navTrend
+    .filter((p) => Number.isFinite(p.nav) && p.nav > 0)
+    .map((p) => ({ date: p.date, open: p.nav, high: p.nav, low: p.nav, close: p.nav, volume: 0, volumeMissing: true }))
+  return { rows: bars, sampleKeys: bars[0] ? Object.keys(bars[0]) : [] }
+}
+
+// ---- 宏观（东财 datacenter-web，中国月度/季度经济指标）----
+interface MacroSeriesDef { report: string; unit: string; headline: string; label: string }
+const MACRO_SERIES: Record<string, MacroSeriesDef> = {
+  cpi: { report: 'RPT_ECONOMY_CPI', unit: '%', headline: 'NATIONAL_SAME', label: '全国 CPI 同比' },
+  ppi: { report: 'RPT_ECONOMY_PPI', unit: '%', headline: 'BASE_SAME', label: 'PPI 同比' },
+  pmi: { report: 'RPT_ECONOMY_PMI', unit: '', headline: 'MAKE_INDEX', label: '制造业 PMI' },
+  gdp: { report: 'RPT_ECONOMY_GDP', unit: '%', headline: 'SUM_SAME', label: 'GDP 同比' },
+  money_supply: { report: 'RPT_ECONOMY_CURRENCY_SUPPLY', unit: '%', headline: 'BASIC_CURRENCY_SAME', label: 'M2 同比' },
+}
+export const MACRO_SERIES_KEYS = Object.keys(MACRO_SERIES)
+
+// Source: eastmoney datacenter-web api/data/v1/get (akshare macro_china_* 系列同源).
+async function emMacro(args: Record<string, unknown>, ctx: ProviderContext) {
+  const series = String(args.series ?? 'cpi')
+  const def = MACRO_SERIES[series] ?? MACRO_SERIES.cpi!
+  const json = await httpGetJson<{ result?: { data?: Array<Record<string, unknown>> } }>(
+    'https://datacenter-web.eastmoney.com/api/data/v1/get',
+    { columns: 'ALL', pageNumber: '1', pageSize: '24', sortColumns: 'REPORT_DATE', sortTypes: '-1', reportName: def.report },
+    opts(ctx, 'https://data.eastmoney.com/'),
+  )
+  const rows = json.result?.data ?? []
+  if (!rows.length) throw new Error(`macro ${series}: empty`)
+  const points = rows.map((r) => ({ time: String(r.TIME ?? ''), value: num(r[def.headline]) })).reverse()
+  const data = {
+    series,
+    label: def.label,
+    unit: def.unit,
+    latest: points.at(-1),
+    points,
+    rows: rows.slice(0, 6),
+  }
+  return { rows, data, sampleKeys: Object.keys(rows[0]!) }
+}
+
+// ---- 基金排行（东财 rankhandler，akshare fund_open_fund_rank_em 同源）----
+const FUND_RANK_TYPES: Record<string, string> = { all: 'all', stock: 'gp', hybrid: 'hh', bond: 'zq', index: 'zs', qdii: 'qdii', money: 'hb' }
+
+/**
+ * 排序键 → 东财 rankhandler `sc` 参数。键名对照 akshare/页面控件的区间列；
+ * `m6`（6yzf，近6月）与货币基金 `1nsyl`（近1年收益）是既有默认口径，
+ * 其余映射未逐个线上核实——非法键一律回落默认，不猜。
+ */
+export const FUND_RANK_SC: Record<string, string> = {
+  m1: '1yzf', m3: '3yzf', m6: '6yzf', y1: '1nzf', y2: '2nzf', y3: '3nzf', ytd: 'jnzf',
+}
+
+/** ft 为已映射的东财类别码（all/gp/hh/zq/zs/qdii/hb）。 */
+export function fundRankSc(ft: string, sortBy?: string): string {
+  if (ft === 'hb') return '1nsyl'
+  return FUND_RANK_SC[String(sortBy ?? '')] ?? FUND_RANK_SC.m6!
+}
+
+/** 构造 rankhandler 查询参数（纯函数，离线可测）。 */
+export function fundRankRequest(fundType: string, size?: number, sortBy?: string, page?: number): Record<string, string> {
+  const ft = FUND_RANK_TYPES[String(fundType ?? 'all')] ?? 'all'
+  const pn = Math.min(Math.max(Math.trunc(Number(size ?? 20)) || 20, 1), 50)
+  const pi = Math.min(Math.max(Math.trunc(Number(page ?? 1)) || 1, 1), 100)
+  return { op: 'ph', dt: 'kf', ft, rs: '', gs: '0', sc: fundRankSc(ft, sortBy), st: 'desc', pi: String(pi), pn: String(pn), dx: '1' }
+}
+
+interface FundRankRow { code: string; name: string; date: string; nav?: number; accNav?: number; dayGrowth?: number; w1?: number; m1?: number; m3?: number; m6?: number; y1?: number; y2?: number; y3?: number; ytd?: number }
+
+async function emFundRank(args: Record<string, unknown>, ctx: ProviderContext) {
+  const query = fundRankRequest(
+    String(args.fundType ?? 'all'),
+    Number(args.size ?? 20),
+    args.sortBy === undefined ? undefined : String(args.sortBy),
+    Number(args.page ?? 1),
+  )
+  const text = await httpGetText(
+    'https://fund.eastmoney.com/data/rankhandler.aspx',
+    query,
+    opts(ctx, 'https://fund.eastmoney.com/data/fundranking.html'),
+  )
+  const block = text.match(/datas:\[([\s\S]*?)\]\s*,/)?.[1] ?? text.match(/datas:\[([\s\S]*)\]/)?.[1] ?? ''
+  const items = [...block.matchAll(/"([^"]*)"/g)].map((m) => m[1]!.split(','))
+  const rows: FundRankRow[] = items.filter((f) => f[0]).map((f) => ({
+    code: f[0]!, name: f[1] ?? '', date: f[3] ?? '',
+    nav: num(f[4]), accNav: num(f[5]), dayGrowth: num(f[6]),
+    w1: num(f[7]), m1: num(f[8]), m3: num(f[9]), m6: num(f[10]), y1: num(f[11]), y2: num(f[12]), y3: num(f[13]), ytd: num(f[14]),
+  }))
+  if (!rows.length) throw new Error('fund rank: empty')
+  return { rows, data: rows, sampleKeys: Object.keys(rows[0]!) }
+}
+
+// ---- 基金历史净值回落源（东财 f10 lsjz）----
+// 契约未线上核实：仅按命名字段（FSRQ/DWJZ/JZZZL/SGZT/SHZT）解析，命不中直接抛错回落，
+// 绝不按位置猜字段。主源（pingzhongdata）失败时才走到这里。
+export interface FundNavApiPoint {
+  date: string
+  nav: number
+  accumNav?: number
+  growthPct?: number
+}
+
+export interface FundNavApiResult {
+  /** 新在前（降序）。 */
+  series: FundNavApiPoint[]
+  subscribeStatus?: string
+  redeemStatus?: string
+}
+
+function pickField(obj: Record<string, unknown>, names: string[]): unknown {
+  for (const n of names) {
+    if (n in obj) return obj[n]
+    const hit = Object.keys(obj).find((k) => k.toLowerCase() === n.toLowerCase())
+    if (hit) return obj[hit]
+  }
+  return undefined
+}
+
+function strNum(v: unknown): number | undefined {
+  if (typeof v === 'string') v = v.replace(/[%％,\s]/g, '')
+  const n = Number(v)
+  return Number.isFinite(n) ? n : undefined
+}
+
+/** 从 lsjz JSON 提取净值序列；没有 FSRQ/DWJZ 这样的命名字段就拒绝解析。 */
+export function parseFundNavLsjz(json: unknown): FundNavApiResult {
+  const root = json && typeof json === 'object' ? json as Record<string, unknown> : undefined
+  const data = root ? (root.Data ?? root.data) as Record<string, unknown> | undefined : undefined
+  const listRaw = data ? (data.lsjzList ?? data.rows ?? data.list) : undefined
+  const list = Array.isArray(listRaw) ? listRaw : undefined
+  if (!list?.length) throw new Error('fund nav api: 响应缺少 Data.lsjzList（契约未线上核实）')
+  const series: FundNavApiPoint[] = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const obj = item as Record<string, unknown>
+    const dateRaw = String(pickField(obj, ['FSRQ', 'date', '净值日期']) ?? '')
+    const nav = strNum(pickField(obj, ['DWJZ', 'nav', '单位净值']))
+    const date = dateRaw.match(/^(\d{4}-\d{2}-\d{2})/)?.[1]
+    if (!date || nav === undefined || nav <= 0 || nav > 10000) continue
+    const point: FundNavApiPoint = { date, nav }
+    const accum = strNum(pickField(obj, ['LJJZ', 'accumNav', '累计净值']))
+    if (accum !== undefined && accum > 0) point.accumNav = accum
+    const growth = strNum(pickField(obj, ['JZZZL', 'JZZDF', 'growthPct', '日增长率']))
+    if (growth !== undefined) point.growthPct = growth
+    series.push(point)
+  }
+  if (!series.length) throw new Error('fund nav api: 解析不到有效净值行（契约未线上核实）')
+  series.sort((a, b) => b.date.localeCompare(a.date))
+  const first = list.find((x) => x && typeof x === 'object') as Record<string, unknown> | undefined
+  const result: FundNavApiResult = { series }
+  if (first) {
+    const sub = typeof pickField(first, ['SGZT', '申购状态']) === 'string' ? String(pickField(first, ['SGZT', '申购状态'])) : undefined
+    const red = typeof pickField(first, ['SHZT', '赎回状态']) === 'string' ? String(pickField(first, ['SHZT', '赎回状态'])) : undefined
+    if (sub) result.subscribeStatus = sub
+    if (red) result.redeemStatus = red
+  }
+  return result
+}
+
+async function emFetchLsjz(code: string, pageSize: number, ctx: ProviderContext): Promise<FundNavApiResult> {
+  const c = fundCode(code)
+  const json = await httpGetJson(
+    'https://api.fund.eastmoney.com/f10/lsjz',
+    { fundCode: c, pageIndex: 1, pageSize },
+    opts(ctx, 'https://fundf10.eastmoney.com/'),
+  )
+  return parseFundNavLsjz(json)
+}
+
+async function emNavQuote(args: Record<string, unknown>, ctx: ProviderContext) {
+  const c = fundCode(String(args.code ?? ''))
+  const res = await emFetchLsjz(c, 20, ctx)
+  const last = res.series[0]!
+  const prev = res.series[1]
+  const quote: StockQuote = {
+    code: c,
+    price: last.nav,
+    change: prev ? Number((last.nav - prev.nav).toFixed(4)) : undefined,
+    changePercent: prev && prev.nav ? Number((((last.nav - prev.nav) / prev.nav) * 100).toFixed(2)) : undefined,
+    asOf: last.date,
+    raw: {
+      navDate: last.date,
+      accumNav: last.accumNav,
+      subscribeStatus: res.subscribeStatus,
+      redeemStatus: res.redeemStatus,
+      source: 'em_fund_nav',
+    },
+  }
+  return { rows: [quote], data: quote, sampleKeys: Object.keys(quote) }
+}
+
+async function emNavKline(args: Record<string, unknown>, ctx: ProviderContext) {
+  const c = fundCode(String(args.code ?? ''))
+  // lsjz 单页上限未知：按请求天数折算并封顶 500 行（近 1 年分析足够；全量历史由主源提供）。
+  const days = Math.max(Number(args.days ?? 120) || 120, 30)
+  const pageSize = Math.min(Math.max(Math.ceil(days * 1.6) + 30, 50), 500)
+  const res = await emFetchLsjz(c, pageSize, ctx)
+  const bars: KlineBar[] = [...res.series]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((p) => ({ date: p.date, open: p.nav, high: p.nav, low: p.nav, close: p.nav, volume: 0, volumeMissing: true }))
+  return { rows: bars, sampleKeys: bars[0] ? Object.keys(bars[0]) : [] }
+}
+
+// ---- 基金重仓持仓（东财 f10 JJCC，穿透/重叠分析用）----
+// 契约未线上核实：年份键优先 + 防御式行识别（normalizeFundHoldingRows ≥60% 认出代码才收），
+// 识别不出就抛错，让档案/工具显式标缺失，不产出猜测数据。
+export function parseFundHoldings(json: unknown): NormalizedHolding[] {
+  const collectArrays = (v: unknown, depth = 0): unknown[][] => {
+    if (depth > 6) return []
+    if (Array.isArray(v)) {
+      const out: unknown[][] = [v]
+      for (const item of v.slice(0, 30)) out.push(...collectArrays(item, depth + 1))
+      return out
+    }
+    if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).flatMap((x) => collectArrays(x, depth + 1))
+    return []
+  }
+  const candidates: unknown[][] = []
+  const root = json && typeof json === 'object' ? json as Record<string, unknown> : undefined
+  const data = root ? (root.Data ?? root.data) as Record<string, unknown> | undefined : undefined
+  // 1) Data: { "2025": [ ... ], "2024": [...] } → 取最新年份。
+  for (const scope of [data, root]) {
+    if (!scope || typeof scope !== 'object') continue
+    const years = Object.keys(scope).filter((k) => /^\d{4}$/.test(k)).sort()
+    const latest = years.at(-1)
+    if (latest && Array.isArray((scope as Record<string, unknown>)[latest])) {
+      candidates.push((scope as Record<string, unknown>)[latest] as unknown[])
+      break
+    }
+  }
+  // 2) 兜底：递归收集数组候选。
+  candidates.push(...collectArrays(json))
+  let best: NormalizedHolding[] = []
+  for (const arr of candidates) {
+    if (!Array.isArray(arr) || arr.length === 0 || arr.length > 100) continue
+    if (!arr.every((x) => x && typeof x === 'object' && !Array.isArray(x))) continue
+    try {
+      const rows = normalizeFundHoldingRows(arr)
+      if (rows.length > best.length) best = rows
+    } catch { /* 候选不认，换下一个 */ }
+  }
+  if (!best.length) throw new Error('fund holdings: 无法从响应识别持仓结构（契约未线上核实，拒绝猜测）')
+  return best
+}
+
+async function emFundHoldings(args: Record<string, unknown>, ctx: ProviderContext) {
+  const c = fundCode(String(args.code ?? ''))
+  const topN = Math.min(Math.max(Math.trunc(Number(args.topN ?? 10)) || 10, 1), 50)
+  const json = await httpGetJson(
+    'https://api.fund.eastmoney.com/f10/JJCC',
+    { fundcode: c, topline: String(topN), year: '', month: '', rt: String(Math.random()) },
+    opts(ctx, 'https://fundf10.eastmoney.com/'),
+  )
+  const rows = parseFundHoldings(json).slice(0, topN)
+  return { rows, data: rows, sampleKeys: rows[0] ? Object.keys(rows[0]) : [] }
+}
+
+// ---- 快讯 / 新闻（东财，akshare stock_info_global_em / stock_news_em 同源）----
+function stripHtml(s: string): string {
+  return s.replace(/<[^>]+>/g, '').trim()
+}
+
+// Source: eastmoney 全球财经快讯 (getFastNewsList). 单一时间线电报。
+async function emNewsFlash(args: Record<string, unknown>, ctx: ProviderContext) {
+  const size = Math.min(Math.max(Number(args.size ?? 20), 1), 50)
+  const json = await httpGetJson<{ data?: { fastNewsList?: Array<Record<string, unknown>> } }>(
+    'https://np-listapi.eastmoney.com/comm/web/getFastNewsList',
+    { client: 'web', biz: 'web_724', fastColumn: '102', sortEnd: '', pageSize: String(size), req_trace: String(Date.now()), _: String(Date.now()) },
+    opts(ctx, 'https://kuaixun.eastmoney.com/'),
+  )
+  const list = json.data?.fastNewsList ?? []
+  const rows = list.map((it) => {
+    const summary = stripHtml(String(it.summary ?? ''))
+    const title = String(it.title ?? '') || summary.match(/^【(.+?)】/)?.[1] || summary.slice(0, 48)
+    const code = it.code ? String(it.code) : undefined
+    return {
+      title,
+      summary,
+      time: String(it.showTime ?? it.showtime ?? it.time ?? ''),
+      url: it.url ? String(it.url) : code ? `https://finance.eastmoney.com/a/${code}.html` : undefined,
+    }
+  })
+  if (!rows.length) throw new Error('news flash: empty')
+  return { rows, data: rows, sampleKeys: Object.keys(list[0]!) }
+}
+
+// Source: eastmoney 搜索 (search-api-web jsonp). 供 stock_news 复用。
+async function emArticleSearch(keyword: string, size: number, ctx: ProviderContext): Promise<Array<SearchResult & { date?: string; source?: string }>> {
+  const param = JSON.stringify({
+    uid: '', keyword, type: ['cmsArticleWebOld'], client: 'web', clientType: 'web', clientVersion: 'curr',
+    param: { cmsArticleWebOld: { searchScope: 'default', sort: 'default', pageIndex: 1, pageSize: size, preTag: '', postTag: '' } },
+  })
+  const text = await httpGetText('https://search-api-web.eastmoney.com/search/jsonp', { cb: 'x', param }, opts(ctx, 'https://so.eastmoney.com/'))
+  const m = text.match(/^[^(]*\(([\s\S]*)\);?\s*$/)
+  const json = JSON.parse(m ? m[1]! : text) as { result?: { cmsArticleWebOld?: Array<Record<string, unknown>> } }
+  const list = json.result?.cmsArticleWebOld ?? []
+  return list.map((it) => ({
+    title: stripHtml(String(it.title ?? '')),
+    url: it.url ? String(it.url) : undefined,
+    snippet: stripHtml(String(it.content ?? '')).slice(0, 200),
+    date: typeof it.date === 'string' ? it.date : undefined,
+    source: typeof it.mediaName === 'string' ? it.mediaName : undefined,
+  })).filter((r) => r.title)
+}
+
+async function emStockNews(args: Record<string, unknown>, ctx: ProviderContext) {
+  const keyword = String(args.code ?? args.keyword ?? '').trim()
+  if (!keyword) throw new Error('empty code for stock news')
+  const size = Math.min(Math.max(Number(args.size ?? 10), 1), 20)
+  const results = await emArticleSearch(keyword, size, ctx)
+  const rows = results.map((r) => ({
+    title: r.title,
+    date: r.date ?? '',
+    source: r.source ?? '',
+    url: r.url,
+    summary: r.snippet,
+  }))
+  if (!rows.length) throw new Error('stock news: empty')
+  return { rows, data: rows, sampleKeys: Object.keys(rows[0]!) }
+}
+
+export const PROVIDERS: ProviderMeta[] = [
+  {
+    id: 'em_a_clist',
+    capability: 'stock_list',
+    endpointRef: 'stock_zh_a_spot_em (stock_hist_em.py) — clist page1',
+    sampleArgs: {},
+    call: emAClist,
+  },
+  {
+    id: 'em_stock_get',
+    capability: 'quote',
+    endpointRef: 'stock_bid_ask_em (stock_ask_bid_em.py)',
+    sampleArgs: { code: '600519' },
+    call: emStockGet,
+  },
+  {
+    id: 'em_individual_info',
+    capability: 'quote',
+    endpointRef: 'stock_individual_info_em (stock_info_em.py)',
+    sampleArgs: { code: '600519' },
+    call: emIndividualInfo,
+  },
+  {
+    id: 'em_kline',
+    capability: 'kline',
+    endpointRef: 'stock_zh_a_hist (stock_hist_em.py)',
+    sampleArgs: { code: '600519', days: 40 },
+    call: emKline,
+  },
+  {
+    id: 'tx_kline',
+    capability: 'kline',
+    endpointRef: 'stock_zh_a_hist_tx (stock_hist_tx.py)',
+    sampleArgs: { code: '600519', days: 40 },
+    call: txKline,
+  },
+  {
+    id: 'em_index_main',
+    capability: 'indices',
+    endpointRef: '__stock_zh_main_spot_em (index_stock_zh.py)',
+    sampleArgs: {},
+    call: emIndexMain,
+  },
+  {
+    id: 'em_main_finadata',
+    capability: 'financials',
+    endpointRef: 'stock_financial_analysis_indicator_em (stock_finance_sina.py)',
+    sampleArgs: { code: '600519' },
+    call: emMainFinadata,
+  },
+  {
+    id: 'em_f10_survey',
+    capability: 'company_survey',
+    endpointRef: 'emweb PC_HSF10/CompanySurvey/PageAjax (F10 公司概况)',
+    sampleArgs: { code: '600519' },
+    call: emF10Survey,
+  },
+  {
+    id: 'em_f10_business',
+    capability: 'business_composition',
+    endpointRef: 'emweb PC_HSF10/BusinessAnalysis/PageAjax (F10 主营构成)',
+    sampleArgs: { code: '600519' },
+    call: emF10Business,
+  },
+  {
+    id: 'em_f10_financials',
+    capability: 'main_financials',
+    endpointRef: 'datacenter RPT_F10_FINANCE_MAINFINADATA (F10 主要财务指标)',
+    sampleArgs: { code: '600519' },
+    call: emF10Financials,
+  },
+  {
+    id: 'em_f10_concepts',
+    capability: 'core_concepts',
+    endpointRef: 'emweb PC_HSF10/CoreConception/PageAjax (F10 核心题材)',
+    sampleArgs: { code: '600519' },
+    call: emF10Concepts,
+  },
+  {
+    id: 'em_f10_holders',
+    capability: 'shareholder_count',
+    endpointRef: 'emweb PC_HSF10/ShareholderResearch/PageAjax (F10 股东户数)',
+    sampleArgs: { code: '600519' },
+    call: emF10Holders,
+  },
+  {
+    id: 'em_f10_valuation',
+    capability: 'valuation_analysis',
+    endpointRef: 'datacenter-web RPT_VALUEANALYSIS_DET (F10 估值分析/分位)',
+    sampleArgs: { code: '600519' },
+    call: emF10Valuation,
+  },
+  {
+    id: 'em_f10_peers',
+    capability: 'peer_comparison',
+    endpointRef: 'emweb PC_HSF10/IndustryAnalysis/PageAjax (同行比较；契约未核实)',
+    sampleArgs: { code: '600519' },
+    call: emF10Peers,
+  },
+  {
+    id: 'em_industry_board',
+    capability: 'sectors',
+    endpointRef: 'stock_board_industry_name_em (stock_board_industry_em.py)',
+    sampleArgs: {},
+    call: emIndustryBoard,
+  },
+  {
+    id: 'em_hk_quote',
+    capability: 'hk_quote',
+    endpointRef: 'stock_bid_ask_em (HK secid 116)',
+    sampleArgs: { code: '00700' },
+    call: emHkQuote,
+  },
+  {
+    id: 'tx_hk_quote',
+    capability: 'hk_quote',
+    endpointRef: 'tencent gtimg q=hk{code}',
+    sampleArgs: { code: '00700' },
+    call: txHkQuote,
+  },
+  {
+    id: 'em_hk_kline',
+    capability: 'hk_kline',
+    endpointRef: 'stock_hk_hist (stock_hist_em.py, HK secid 116)',
+    sampleArgs: { code: '00700', days: 40 },
+    call: emHkKline,
+  },
+  {
+    id: 'tx_hk_kline',
+    capability: 'hk_kline',
+    endpointRef: 'stock_zh_a_hist_tx (hk 前缀)',
+    sampleArgs: { code: '00700', days: 40 },
+    call: txHkKline,
+  },
+  {
+    id: 'em_hk_clist',
+    capability: 'hk_list',
+    endpointRef: 'stock_hk_spot_em (clist m:128 page1)',
+    sampleArgs: {},
+    call: emHkClist,
+  },
+  {
+    id: 'yahoo_quote',
+    capability: 'us_quote',
+    endpointRef: 'Yahoo Finance chart v8 (regularMarketPrice)',
+    sampleArgs: { code: 'AAPL' },
+    call: yahooQuote,
+  },
+  {
+    id: 'em_us_quote',
+    capability: 'us_quote',
+    endpointRef: 'stock_us_spot_em (secid via suggest)',
+    sampleArgs: { code: 'AAPL' },
+    call: emUsQuote,
+  },
+  {
+    id: 'yahoo_kline',
+    capability: 'us_kline',
+    endpointRef: 'Yahoo Finance chart v8 (OHLCV series)',
+    sampleArgs: { code: 'AAPL', days: 40 },
+    call: yahooKline,
+  },
+  {
+    id: 'em_us_kline',
+    capability: 'us_kline',
+    endpointRef: 'stock_us_hist (secid via suggest)',
+    sampleArgs: { code: 'AAPL', days: 40 },
+    call: emUsKline,
+  },
+  {
+    id: 'em_fund_quote',
+    capability: 'fund_quote',
+    endpointRef: 'fund.eastmoney.com pingzhongdata (Data_netWorthTrend 单位净值)',
+    sampleArgs: { code: '110022' },
+    call: emFundQuote,
+  },
+  {
+    // 回落源：主源（pingzhongdata）失败时用 f10 lsjz 命名字段解析；契约未线上核实。
+    id: 'em_fund_nav_quote',
+    capability: 'fund_quote',
+    endpointRef: 'api.fund.eastmoney.com f10/lsjz（命名字段解析，契约未线上核实）',
+    sampleArgs: { code: '110022' },
+    call: emNavQuote,
+  },
+  {
+    id: 'em_fund_kline',
+    capability: 'fund_kline',
+    endpointRef: 'fund.eastmoney.com pingzhongdata (净值走势序列)',
+    sampleArgs: { code: '110022' },
+    call: emFundKline,
+  },
+  {
+    id: 'em_fund_nav_kline',
+    capability: 'fund_kline',
+    endpointRef: 'api.fund.eastmoney.com f10/lsjz 近段净值（回落源，契约未线上核实）',
+    sampleArgs: { code: '110022', days: 120 },
+    call: emNavKline,
+  },
+  {
+    id: 'em_fund_holdings',
+    capability: 'fund_holdings',
+    endpointRef: 'api.fund.eastmoney.com f10/JJCC 重仓持仓（契约未线上核实，防御式解析）',
+    sampleArgs: { code: '110022' },
+    call: emFundHoldings,
+  },
+  {
+    id: 'em_news_flash',
+    capability: 'news_flash',
+    endpointRef: 'eastmoney 全球财经快讯 getFastNewsList (akshare stock_info_global_em)',
+    sampleArgs: { size: 5 },
+    call: emNewsFlash,
+  },
+  {
+    id: 'em_stock_news',
+    capability: 'stock_news',
+    endpointRef: 'eastmoney 搜索资讯 (akshare stock_news_em)',
+    sampleArgs: { code: '600519', size: 5 },
+    call: emStockNews,
+  },
+  {
+    id: 'em_macro',
+    capability: 'macro',
+    endpointRef: 'eastmoney datacenter-web (中国 CPI/PPI/PMI/GDP/货币供应)',
+    sampleArgs: { series: 'cpi' },
+    call: emMacro,
+  },
+  {
+    id: 'em_fund_rank',
+    capability: 'fund_rank',
+    endpointRef: 'fund.eastmoney rankhandler (开放式基金排行)',
+    sampleArgs: { fundType: 'all', size: 10 },
+    call: emFundRank,
+  },
+  {
+    id: 'em_suggest',
+    capability: 'symbol_search',
+    endpointRef: 'eastmoney searchapi suggest (跨市场代码/名称解析)',
+    sampleArgs: { query: '腾讯' },
+    call: emSuggest,
+  },
+  {
+    id: 'em_stock_info',
+    capability: 'stock_info',
+    endpointRef: 'stock_individual_info_em (行情+市值字段)',
+    sampleArgs: { code: '600519' },
+    call: emStockInfo,
+  },
+  {
+    // 免安装的回补实现排在最前：没有 pip 依赖也能搜索。
+    id: 'rss_web_search',
+    capability: 'web_search',
+    endpointRef: 'Bing Search RSS — Node 原生解析，零依赖',
+    sampleArgs: { query: 'nvidia stock' },
+    call: rssWebSearch,
+  },
+  {
+    id: 'py_web_search',
+    capability: 'web_search',
+    endpointRef: 'Python ddgs + primp → Bing/Google/Yandex (可选，pip install ddgs)',
+    sampleArgs: { query: 'nvidia stock' },
+    call: pyWebSearch,
+  },
+
+  // ---- WeStock CLI（腾讯自选股，免鉴权）----
+  {
+    id: 'ws_quote',
+    capability: 'quote',
+    endpointRef: 'westock quote <sh600519> — 腾讯自选股网关 (proxy.finance.qq.com)',
+    sampleArgs: { code: '600519' },
+    call: westockProviders.quote,
+  },
+  {
+    id: 'ws_kline',
+    capability: 'kline',
+    endpointRef: 'westock kline <sh600519> --period day',
+    sampleArgs: { code: '600519', days: 40 },
+    call: westockProviders.kline,
+  },
+  {
+    id: 'ws_hk_quote',
+    capability: 'hk_quote',
+    endpointRef: 'westock quote <hk00700>',
+    sampleArgs: { code: '00700' },
+    call: westockProviders.hkQuote,
+  },
+  {
+    id: 'ws_hk_kline',
+    capability: 'hk_kline',
+    endpointRef: 'westock kline <hk00700> --period day',
+    sampleArgs: { code: '00700', days: 40 },
+    call: westockProviders.hkKline,
+  },
+  {
+    id: 'ws_us_quote',
+    capability: 'us_quote',
+    endpointRef: 'westock quote <usAAPL>',
+    sampleArgs: { code: 'AAPL' },
+    call: westockProviders.usQuote,
+  },
+  {
+    id: 'ws_us_kline',
+    capability: 'us_kline',
+    endpointRef: 'westock kline <usAAPL> --period day',
+    sampleArgs: { code: 'AAPL', days: 40 },
+    call: westockProviders.usKline,
+  },
+  {
+    id: 'ws_research',
+    capability: 'research_report',
+    endpointRef: 'westock report list <sh600519> — 券商研报（标题/机构/评级/时间）',
+    sampleArgs: { code: '600519', size: 5 },
+    call: westockProviders.research,
+  },
+  {
+    id: 'ws_news',
+    capability: 'stock_news',
+    endpointRef: 'westock news list <sh600519>',
+    sampleArgs: { code: '600519', size: 5 },
+    call: westockProviders.news,
+  },
+  {
+    id: 'ws_financials',
+    capability: 'financials',
+    endpointRef: 'westock finance <sh600519> — 三大报表',
+    sampleArgs: { code: '600519' },
+    call: westockProviders.financials,
+  },
+  {
+    id: 'ws_profile',
+    capability: 'stock_info',
+    endpointRef: 'westock profile <sh600519> — 公司简况',
+    sampleArgs: { code: '600519' },
+    call: westockProviders.profile,
+  },
+  {
+    id: 'ws_search',
+    capability: 'symbol_search',
+    endpointRef: 'westock search <关键词> — 跨市场代码解析',
+    sampleArgs: { query: '腾讯' },
+    call: westockProviders.search,
+  },
+  {
+    id: 'ws_quotes_batch',
+    capability: 'quotes_batch',
+    endpointRef: 'westock quote <sh600519,sz000858,hk00700> — 一次调用拿多只标的',
+    sampleArgs: { codes: ['600519', '000858', '00700'] },
+    call: westockProviders.quotesBatch,
+  },
+  {
+    id: 'ws_indices',
+    capability: 'indices',
+    endpointRef: 'westock quote <sh000001,sz399001,…> — 指数批量行情',
+    sampleArgs: { codes: DEFAULT_INDEX_CODES },
+    call: westockProviders.indices,
+  },
+
+  // ---- WeStock CLI 扩展能力（表驱动，见 westock-capabilities.ts）----
+  ...WESTOCK_SPECS.map((spec) => ({
+    id: spec.id,
+    capability: spec.capability,
+    endpointRef: spec.usage,
+    sampleArgs: spec.sampleArgs,
+    call: WESTOCK_CAPABILITY_PROVIDERS[spec.id]!,
+  })),
+]
+
+export const PROVIDER_BY_ID = new Map(PROVIDERS.map((p) => [p.id, p]))

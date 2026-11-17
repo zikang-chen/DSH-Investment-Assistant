@@ -1,0 +1,18 @@
+- insert:
+    - id: dsh-finance
+      name: dsh-finance
+      config:
+        cacheTtlSec: 300
+        requestGapMs: 3000
+        httpTimeoutMs: 30000
+        # 数据文件位置由 dataDir 决定（默认 <包目录>/data）；需要按 profile 隔离时
+        # 在 profile 层覆盖 dataDir，或显式给出绝对的 portfolioPath / probeReportPath。
+
+# Route the web search seam through this plugin's meta-search provider.
+# 同时显式指定 fetch 提供方：DSH 里注册了两个 fetch 提供方（deepseek-fetch-api、http），
+# 不指定就会报 "multiple usable web providers are registered"。http 是纯 HTTP，不需要 key。
+# 注意：Loader 的 override 会**整体替换** config，所以两个 key 必须一起写。
+- id: web
+  config:
+    searchProvider: dsh-web-search
+    fetchProvider: http

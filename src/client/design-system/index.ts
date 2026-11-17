@@ -1,0 +1,10 @@
+/** Public Institutional Finance UI API. React is supplied by the DSH host; no new runtime packages. */
+export { FinanceTheme, ThemeControls, Button, PageHeader, StatusBadge, EmptyState, MetricCard } from './components.js'
+export type { FinanceThemeProps, ButtonProps, PageHeaderProps, StatusTone, StatusBadgeProps, EmptyStateProps, MetricCardProps } from './components.js'
+export { formatNumber, formatMoney, formatPercent, formatPoints, formatCompact, formatDate, MISSING_VALUE } from './format.js'
+export type { NumericValue, NumberFormatOptions, MoneyFormatOptions, PercentFormatOptions, PointsFormatOptions, DateFormatOptions } from './format.js'
+export { palette, marketPalette, dimensionTokens, getFinanceTokens, contrastRatio, relativeLuminance, tokenCss } from './tokens.js'
+export type { ResolvedTheme, ThemePreference, MarketMode, PaletteToken } from './tokens.js'
+export { useFinanceTheme, getThemeSnapshot, subscribeTheme, setThemePreference, setMarketMode, THEME_STORAGE_KEY, themeFromHostSignal } from './theme-store.js'
+export type { ThemeSnapshot, HostThemeSignal } from './theme-store.js'
+export { financeCss } from './styles.js'
