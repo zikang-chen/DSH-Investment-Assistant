@@ -48,6 +48,18 @@ jobs:
       - name: Capital / holdings / sources UI contracts
         run: npm run test:capital-ui && npm run test:holding-entry && npm run test:sources-ui
 
+      - name: Global macro and financial adapters
+        run: npm run test:global-macro && npm run test:global-financials
+
+      - name: A-share market detail and global news radar
+        run: npm run test:market-detail && npm run test:global-news
+
+      - name: Fund UI and international policy sources
+        run: npm run test:fund-ui && npm run test:intl-policy
+
+      - name: Dossier global sections
+        run: npm run test:dossier-global
+
       # 离线、确定性的套件；依赖外部数据源或 POSIX 文件权限的套件不在此跑。
       - name: Policy
         run: npm run test:policy

@@ -72,7 +72,8 @@ test('search transports requested bounds without changing internal identifier re
   assert.match(providers, /const matches = await emSuggestMatches\(kw, ctx, limit\)/)
 })
 test('security entry, detail, chart and private-data boundaries are actually wired', () => {
-  assert.match(entry, /h\(SecurityLink, \{ item: \{ code: r\.code, name: r\.name, type: 'fund' \}/)
+  assert.match(entry, /h\(FundWorkspace, \{ get: apiGet, active: tab === 'funds'/)
+  assert.match(entry, /onOpenFund: \(item\) => \{ setSecurityReturnTab\('funds'\); setDossierTarget/)
   assert.match(entry, /h\(SecurityWorkspace/)
   assert.match(entry, /window\.addEventListener\(SECURITY_OPEN_EVENT/)
   assert.match(entry, /window\.removeEventListener\(SECURITY_OPEN_EVENT/)

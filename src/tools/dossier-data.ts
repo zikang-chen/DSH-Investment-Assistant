@@ -157,6 +157,8 @@ function copyData(value: unknown, path: string, depth: number, context: CopyCont
 const stockCapabilities: Record<string, string> = {
   score: 'stock_score', rating: 'institution_rating', margin: 'margin_trade', block: 'block_trade',
   lhb: 'dragon_tiger', north: 'north_holding', events: 'stock_events', risk: 'risk_events', notice: 'notice_list', news: 'stock_news',
+  announcements: 'announcements', dividend_plan: 'dividend_plan', performance: 'performance',
+  margin_detail: 'margin_detail', block_trade: 'block_trade_detail',
 }
 function followUp(dossier: StockDossier, section: DossierSection): SectionDataPresentation['followUp'] {
   const code = prefix(dossier.code, 80)
@@ -166,7 +168,10 @@ function followUp(dossier: StockDossier, section: DossierSection): SectionDataPr
     if (section.key === 'holdings') return { tool: 'westock_call', args: { capability: 'fund_holdings', args: JSON.stringify({ code, topN: 30 }), limit: 30 }, note: `${note} 场内 ETF 主源失败时可按需 get_etf_holdings；并非完整持仓。` }
     return { tool: 'get_fund_quote', args: { code }, note: `${note} 基金画像查看返回的 raw.profile；缺字段仍须补证，不假设该工具必有全部画像。` }
   }
-  return { tool: 'westock_call', args: { capability: stockCapabilities[section.key] ?? prefix(section.key, 80), args: JSON.stringify({ code }), limit: 30 }, note: `${note} 龙虎榜/回购等按所需期间补充 start/end。` }
+  if (section.key === 'money_flow') return { tool: 'get_money_flow', args: { code }, note: `${note} 资金流为按日算法统计，不是公司现金流；缺少日期时先核对交易日。` }
+  if (section.key === 'hk_financials') return { tool: 'get_global_financials', args: { code, market: 'hk' }, note: `${note} 港股中报/季报为年初至今累计，不能当单季；币种以返回 currency 为准。` }
+  if (section.key === 'us_financials') return { tool: 'get_global_financials', args: { code, market: 'us' }, note: `${note} 美股来自 SEC XBRL：10-K 年度、10-Q 单季；需要配置可联系的 User-Agent。` }
+  return { tool: 'westock_call', args: { capability: stockCapabilities[section.key] ?? prefix(section.key, 80), args: JSON.stringify({ code }), limit: 30 }, note: `${note} 龙虎榜/回购/大宗等按所需期间补充 start/end。` }
 }
 
 function previewSection(section: DossierSection, dossier: StockDossier, budget: number): DossierToolSection {

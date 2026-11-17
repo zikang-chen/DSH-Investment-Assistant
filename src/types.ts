@@ -111,6 +111,18 @@ export type Capability =
   | 'valuation_analysis'
   | 'peer_comparison'
 
+  // ---- T5 东财公司事件明细（仅 A 股，公开接口）----
+  | 'announcements'
+  | 'dividend_plan'
+  | 'performance'
+  | 'margin_detail'
+  | 'block_trade_detail'
+  // 资金流逐日明细（EM 独占）：registry 会把 ws_* 提权，service 用它保证
+  // get_money_flow 与 dossier 先拿 EM 20 日明细，WeStock 仍作为回退。
+  | 'money_flow_detail'
+  // ---- T5 全球财务（港股东财 HKF10 / 美股 SEC XBRL）----
+  | 'global_financials'
+
 export const CAPABILITIES: Capability[] = [
   'stock_list',
   'quote',
@@ -196,6 +208,13 @@ export const CAPABILITIES: Capability[] = [
   'shareholder_count',
   'valuation_analysis',
   'peer_comparison',
+  'announcements',
+  'dividend_plan',
+  'performance',
+  'margin_detail',
+  'block_trade_detail',
+  'money_flow_detail',
+  'global_financials',
 ]
 
 /** Default fallback order; probe may reorder to put green providers first. */
@@ -250,9 +269,16 @@ export const DEFAULT_PROVIDER_ORDER: Record<Capability, string[]> = {
   sector_info: ['ws_sector_info'],
   hot_rank: ['ws_hot'],
   disclosure_calendar: ['ws_disclosure'],
-  money_flow: ['ws_fund_flow'],
+  // 资金流：东财逐日 20 日明细优先（EM 条目在 providers.ts 中排在 WeStock 展开之前）；
+  // registry 默认会提权 ws_*，因此 service.westock('money_flow') 还会先走
+  // money_flow_detail（EM 独占）再回退到这里，保证工具与 dossier 拿到逐日数据。
+  money_flow: ['em_market_detail_money_flow', 'ws_fund_flow'],
+  money_flow_detail: ['em_market_detail_money_flow_detail'],
   margin_trade: ['ws_margin'],
-  block_trade: ['ws_block'],
+  // 两融/大宗明细为东财数据中心专属能力（仅 A 股）。
+  margin_detail: ['em_market_detail_margin_detail'],
+  block_trade: ['em_market_detail_block_trade', 'ws_block'],
+  block_trade_detail: ['em_market_detail_block_trade_detail'],
   dragon_tiger: ['ws_lhb_stock'],
   north_holding: ['ws_north_holding'],
   south_holding: ['ws_south_holding'],
@@ -296,6 +322,14 @@ export const DEFAULT_PROVIDER_ORDER: Record<Capability, string[]> = {
   valuation_analysis: ['em_f10_valuation'],
   // 同行比较上游契约未核实；默认先试上游（防御式解析），失败时工具层做显式标注的本地比较。
   peer_comparison: ['em_f10_peers'],
+
+  // T5 东财公司事件明细（仅 A 股）：官方公告库 + 数据中心报表，单一来源，
+  // 失败只影响对应 dossier section；不补 0、不把抓取时间当数据时点。
+  announcements: ['em_market_detail_announcements'],
+  dividend_plan: ['em_market_detail_dividend_plan'],
+  performance: ['em_market_detail_performance'],
+  // T5 全球财务：一个 provider 按 market 参数分别走港股 HKF10 / 美股 SEC XBRL。
+  global_financials: ['global_financials_sources'],
 }
 
 /** Asset kind for a portfolio/watchlist entry. Funds share a 6-digit code shape with A-shares, so the kind is explicit. */

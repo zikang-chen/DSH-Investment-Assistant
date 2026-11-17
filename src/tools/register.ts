@@ -4,10 +4,12 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import '@deepseek-ai/dsh-tools'
 import { getPanelFocus } from '../panel-focus.js'
 import type { AnalysisRefs, AnalysisStore } from '../analysis-store.js'
-import type { FinanceDataService } from '../data/service.js'
+import { routeCode, type FinanceDataService } from '../data/service.js'
 import type { PanelBus } from '../panel-bus.js'
 import { buildStockDossier } from '../data/dossier.js'
 import { buildFundDossier } from '../data/fund-dossier.js'
+import { GLOBAL_MACRO_SERIES_KEYS } from '../data/global-macro.js'
+import { fetchAndBuildGlobalNewsRadar } from '../news/global-radar.js'
 import { dossierToolResult } from './dossier-data.js'
 import {
   compareFunds,
@@ -44,10 +46,11 @@ const jsonOut = {
 }
 
 export function registerTools(ctx: Context, finance: FinanceDataService, store: PortfolioStore, analyses: AnalysisStore, bus: PanelBus, personal?: PersonalStore, library?: StrategyLibrary) {
-  // 个股深度档案：一次调用拿到 WeStock 上该标的的全部维度（研究/资金/股东/风险/资讯/产业链）。
+  // 个股深度档案：一次调用拿到该标的的行情外全部维度（研究/资金/股东/风险/资讯/产业链，
+  // A 股另有东财公司事件明细与全球财务；口径/时点随 section 返回）。
   ctx.tools.register(defineTool({
     name: 'stock_dossier',
-    description: '个股深度档案：并发取回一致预期、股票评分、ESG、机构评级、资金流向、融资融券、大宗交易、龙虎榜、北向持仓、股东研究、分红、回购、风险事件、停复牌、公告、新闻、所属产业链。做深度研究/尽调时优先用它，比逐个命令调用快得多。基金请改用 fund_dossier。',
+    description: '个股深度档案：并发取回一致预期、股票评分、ESG、机构评级、资金流向（A股优先东财逐日 20 日明细）、融资融券（A股含东财逐日明细）、大宗交易（A股含东财逐笔明细）、龙虎榜、北向持仓、股东研究、分红（A股含东财分红送配）、业绩预告/快报（A股）、公告（A股含东财公告原文索引）、回购、风险事件、停复牌、新闻、所属产业链，以及港股财务（东财 HKF10，累计口径非单季）与美股财务（SEC XBRL，10-K 年度/10-Q 单季）。各维度显式来源与数据时点，失败只影响该维度；基金请改用 fund_dossier。',
     parameters: {
       code: { type: 'string', description: '标的代码，如 600519 / 00700 / AAPL' },
       type: { type: 'string', description: 'stock（默认）或 fund' },
@@ -624,6 +627,67 @@ export function registerTools(ctx: Context, finance: FinanceDataService, store: 
   }))
 
   ctx.tools.register(defineTool({
+    name: 'get_macro_global',
+    description: '全球宏观结构化数据（真实统计源，不是网页摘要）：us_cpi 美国CPI同比（OECD SDMX 月度）、ea_hicp 欧元区HICP同比（Eurostat 月度）、ea_unemployment 欧元区失业率（Eurostat 月度季调）、us_gdp_growth / ea_gdp_growth 实际GDP年增速（World Bank 年度）、ea_policy_rate 欧央行存款便利利率（ECB data-api 日频）。每条序列返回 source/unit/asOf(最新统计期，不是抓取时间)/fetchedAt/points/latest/provenance/notes；抓取失败或空值明确 error，不补 0。',
+    parameters: {
+      series: {
+        type: 'array',
+        items: { type: 'string', enum: [...GLOBAL_MACRO_SERIES_KEYS] },
+        description: `要取的序列；缺省=全部 ${GLOBAL_MACRO_SERIES_KEYS.length} 条`,
+      },
+      limit: { type: 'number', description: '每条序列返回最近多少期（1-120，默认 24）' },
+    },
+    output: jsonOut,
+    async execute(args, exec) {
+      // 模型可能给数组，也可能给逗号分隔字符串；两种都交给 normalizeSeriesRequest 处理。
+      const requested = Array.isArray(args.series)
+        ? args.series.map((item) => String(item))
+        : typeof args.series === 'string' ? args.series : undefined
+      const limit = args.limit === undefined ? undefined : Number(args.limit)
+      const report = await finance.getMacroGlobal(requested, exec.signal, limit)
+      return asJson(report)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'get_global_news_radar',
+    description: '全球市场新闻雷达：抓取已核实的官方源（Fed/ECB/BIS/SEC/BoE），按来源权威、事件类型、一手性、时间衰减（可带跨资产反应与关键词相关性）做确定性排序。score 只是“覆盖源范围内的相对重要性”，不是因果、不是涨跌预测，也不声称全市场最重要。返回标题/来源/发布时间/链接/事件类型/分数分项与来源诊断；媒体源默认不启用。',
+    parameters: {
+      hours: { type: 'number', description: '回看小时数（1-720，默认 168）' },
+      limit: { type: 'number', description: '返回条数（1-50，默认 12）' },
+      keywords: { type: 'array', items: { type: 'string' }, description: '可选：与持仓/自选/关注主题相关的关键词，用于相关性加分' },
+    },
+    output: jsonOut,
+    async execute(args) {
+      const rawHours = Number(args.hours ?? 168)
+      const hours = Number.isFinite(rawHours) ? Math.min(720, Math.max(1, Math.trunc(rawHours))) : 168
+      const rawLimit = Number(args.limit ?? 12)
+      const limit = Number.isFinite(rawLimit) ? Math.min(50, Math.max(1, Math.trunc(rawLimit))) : 12
+      const keywords = Array.isArray(args.keywords) ? args.keywords.map(String).filter(Boolean).slice(0, 20) : []
+      const run = await fetchAndBuildGlobalNewsRadar({
+        now: new Date().toISOString(),
+        windowHours: hours,
+        maxItems: limit,
+        ...(keywords.length ? { relevance: { keywords, label: '研究主题' } } : {}),
+      })
+      return asJson({
+        ok: true,
+        fetchedAt: run.radar.generatedAt,
+        hours,
+        items: run.radar.items.map(item => ({
+          id: item.id, title: item.title, url: item.link ?? undefined, source: item.sourceName,
+          authority: item.authority, eventType: item.eventType, publishedAt: item.publishedAt ?? undefined,
+          score: item.score.total, scoreComponents: item.score.components, reasons: item.score.reasons,
+          eventReason: item.eventReason,
+        })),
+        stats: run.radar.stats,
+        feedDiagnostics: run.radar.feedDiagnostics,
+        disclaimer: run.radar.disclaimer,
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'web_search',
     description: '免费网页搜索（Python ddgs → Bing/Google/Yandex，无需 API Key）。用于查行情消息、财报、公司资讯。',
     parameters: {
@@ -707,6 +771,45 @@ export function registerTools(ctx: Context, finance: FinanceDataService, store: 
       const res = await finance.getFinancials(args.code, exec.signal)
       if (!res.ok) return asJson({ ok: false, error: res.error ?? 'unavailable' })
       return asJson({ ok: true, provider: res.provider, rows: res.data })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'get_global_financials',
+    description: '港股/美股财务数据（结构化来源，不是网页摘要）：港股=东财 HKF10 主要财务指标（累计口径、非单季，币种随报告）；美股=SEC EDGAR XBRL companyfacts（10-K 年度 / 10-Q 单季，USD）。返回 source/currency/rows；SEC 要求 User-Agent（DSH_SEC_EDGAR_UA 含联系邮箱），缺失会显式失败，不伪造、不补 0。market 省略时按代码形态推断（数字=港股，字母=美股）。',
+    parameters: {
+      code: { type: 'string', required: true, description: '港股如 00700，美股如 AAPL' },
+      market: { type: 'string', enum: ['hk', 'us'], description: '可选；省略时按代码推断' },
+    },
+    output: jsonOut,
+    async execute(args, exec) {
+      const code = String(args.code ?? '').trim()
+      if (!code) return asJson({ ok: false, error: 'code is required' })
+      const routed = routeCode(code, 'stock')
+      const explicit = args.market === 'hk' || args.market === 'us' ? args.market : undefined
+      const inferred = routed.market === '港股' ? 'hk' : routed.market === '美股' ? 'us' : undefined
+      const market = explicit ?? inferred
+      if (!market) {
+        return asJson({ ok: false, code, error: '无法从代码推断市场，请显式传 market=hk|us（该工具只覆盖港股/美股）' })
+      }
+      const res = await finance.getGlobalFinancials(code, market, exec.signal)
+      if (!res.ok || !res.data) {
+        return asJson({ ok: false, market, code, error: res.error ?? 'unavailable', attempts: res.attempts })
+      }
+      const data = res.data
+      return asJson({
+        ok: true,
+        market: data.market,
+        code: data.code,
+        name: data.name,
+        currency: data.currency,
+        source: data.source,
+        fetchedAt: data.fetchedAt,
+        count: data.rows.length,
+        rows: data.rows,
+        ...(data.profile ? { profile: data.profile } : {}),
+        ...(data.warnings?.length ? { warnings: data.warnings } : {}),
+      })
     },
   }))
 

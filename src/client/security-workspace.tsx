@@ -49,6 +49,30 @@ export function securityResearchPrompt(item: SecurityIdentity, portfolioAuthoriz
       : '本次没有授权使用个人持仓、账户或家庭财务明细。请把可复用证据存入资料库，并用 investment_advice_generate 保存条件性判断；证据不足时不得生成仓位或价格行动方案。',
   ].join('\n')
 }
+function FundNavChart({ series, note }: { series: Array<{ date: string; nav: number | null }>; note: string }) {
+  const points = series.filter(p => typeof p.nav === 'number' && Number.isFinite(p.nav)) as Array<{ date: string; nav: number }>
+  if (!points.length) return <p className="fia-muted">{note || '暂无净值序列。'}</p>
+  const sample = points.length > 240 ? points.filter((_, i) => i % Math.ceil(points.length / 240) === 0) : points
+  const values = sample.map(p => p.nav)
+  const min = Math.min(...values), max = Math.max(...values)
+  const span = max - min || 1
+  const width = 640, height = 180
+  const coords = sample.map((p, i) => [i / Math.max(1, sample.length - 1) * width, height - ((p.nav - min) / span) * (height - 20) - 10] as const)
+  const path = coords.map(([x, y], i) => (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1)).join(' ')
+  const first = points[0]!, last = points[points.length - 1]!
+  return <div>
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`净值走势，${first.date} 至 ${last.date}，${points.length} 个有效点`} style={{ width: '100%', height: 180, display: 'block' }}>
+      <path d={path} fill="none" stroke="var(--fia-brand)" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+    </svg>
+    <div className="fia-security-data-meta">
+      <span>{first.date} → {last.date} · {points.length} 个净值点</span>
+      <span>区间 {min.toFixed(4)} ~ {max.toFixed(4)}</span>
+      <span>最新 {last.nav.toFixed(4)}（{last.date}）</span>
+    </div>
+    <p className="fia-muted">净值按 T+1 披露，日期是净值日，不是实时成交价。{note}</p>
+  </div>
+}
+
 export function SecurityWorkspace(props: {
   get: ReadApi; deliver: Deliver; requested?: SecurityIdentity & { at: number }
   initial?: string; initialType?: 'stock' | 'fund'; onBack?: () => void
@@ -60,6 +84,8 @@ export function SecurityWorkspace(props: {
   const [data, setData] = useState<SecurityDossier>()
   const [history, setHistory] = useState<{ bars: RawBar[]; events: KlineMarker[] }>({ bars: [], events: [] })
   const [historyNote, setHistoryNote] = useState('')
+  const [navSeries, setNavSeries] = useState<Array<{ date: string; nav: number | null }>>([])
+  const [navNote, setNavNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [sending, setSending] = useState(false)
@@ -73,14 +99,23 @@ export function SecurityWorkspace(props: {
     const id = ++sequence.current
     // A consent tick is for one analysis of this exact identity only.
     setIncludePortfolio(false)
-    setIdentity(item); setData(undefined); setHistory({ bars: [], events: [] }); setHistoryNote(''); setError(''); setFeedback(''); setBusy(true)
+    setIdentity(item); setData(undefined); setHistory({ bars: [], events: [] }); setHistoryNote(''); setNavSeries([]); setNavNote(''); setError(''); setFeedback(''); setBusy(true)
     try {
       const result = await props.get<SecurityDossier>(`/dossier?code=${encodeURIComponent(item.code)}&type=${item.type}`)
       if (!result.ok) throw new Error('档案数据源返回失败')
       if (sequence.current === id) setData(result)
     } catch (err) { if (sequence.current === id) setError(err instanceof Error ? err.message : String(err)) }
     finally { if (sequence.current === id) setBusy(false) }
-    if (item.type !== 'stock' || sequence.current !== id) return
+    if (sequence.current !== id) return
+    if (item.type === 'fund') {
+      try {
+        const result = await props.get<{ ok?: boolean; series?: Array<{ date: string; nav: number | null }>; error?: string }>('/fund/kline?code=' + encodeURIComponent(item.code))
+        if (sequence.current !== id) return
+        if (result.ok === false) setNavNote(result.error || '净值序列读取失败')
+        else setNavSeries(result.series ?? [])
+      } catch (err) { if (sequence.current === id) setNavNote(err instanceof Error ? err.message : String(err)) }
+      return
+    }
     const historyKind = historyKindRef.current?.(item) ?? 'a'
     try {
       const result = await props.get<{ kline?: RawBar[]; events?: KlineMarker[] }>(`/history?code=${encodeURIComponent(item.code)}&kind=${encodeURIComponent(historyKind)}`)
@@ -112,6 +147,6 @@ export function SecurityWorkspace(props: {
     {busy && <p role="status" className="fia-muted">正在并发读取各维度，失败项将单独标注，不会用演示数据填充。</p>}
     {error && <div role="alert" className="fia-notice fia-notice--error">{error}{identity && <Button onClick={() => void load(identity)}>重试</Button>}</div>}
     {!identity && <EmptyState title="用名称片段或代码查找" description="例如输入“中国”，从数据源返回的多个候选中选择准确的市场与代码。也可以从持仓、基金排行和自选名称点击进入。" />}
-    {data && <><div className="fia-research-section"><h3>行情走势</h3>{historyNote ? <div className="fia-notice fia-notice--error" role="alert">本地历史读取失败：{historyNote}。这不等于“没有数据”，请检查代码与市场类型后重试。</div> : history.bars.length ? <KlineChart bars={history.bars} markers={history.events} title={`${displayName} · 本地历史K线`} height={280} /> : <p className="fia-muted">{identity?.type === 'fund' ? '净值走势可在行情工作区读取。' : '本地尚无已缓存的历史K线，不代表没有交易数据。'} 点击“查看K线／净值走势”可进入完整行情工作区并同步。</p>}</div>{data.sections.map(section => <DossierSection section={section} key={`${data.snapshotId ?? data.at}-${section.key}`} />)}<p className="fia-muted">抓取时间不等于数据时点。资金流按数据源算法统计，不等于公司现金流；机构预期不等于公司承诺。年报PDF若尚未解析，需由Agent取得可核验原文后再引用。</p></>}
+    {data && <><div className="fia-research-section"><h3>{identity?.type === 'fund' ? '净值走势' : '行情走势'}</h3>{identity?.type === 'fund' ? <FundNavChart series={navSeries} note={navNote} /> : historyNote ? <div className="fia-notice fia-notice--error" role="alert">本地历史读取失败：{historyNote}。这不等于“没有数据”，请检查代码与市场类型后重试。</div> : history.bars.length ? <KlineChart bars={history.bars} markers={history.events} title={`${displayName} · 本地历史K线`} height={280} /> : <p className="fia-muted">本地尚无已缓存的历史K线，不代表没有交易数据。点击“查看K线／净值走势”可进入完整行情工作区并同步。</p>}</div>{data.sections.map(section => <DossierSection section={section} key={`${data.snapshotId ?? data.at}-${section.key}`} />)}<p className="fia-muted">抓取时间不等于数据时点。资金流按数据源算法统计，不等于公司现金流；机构预期不等于公司承诺。年报PDF若尚未解析，需由Agent取得可核验原文后再引用。</p></>}
   </div>
 }

@@ -2,6 +2,8 @@ import { valuation, quoteCurrency } from '../valuation.js'
 import type { AssetType, Holding, KlineBar, PortfolioHolding, SearchResult, StockInfo, StockQuote, SymbolMatch } from '../types.js'
 import type { NormalizedHolding } from '../fund-analysis.js'
 import { stripMarketSuffix } from './http.js'
+import { fetchGlobalMacroReport } from './providers.js'
+import type { GlobalFinancialsResult } from './global-financials.js'
 import type { ProviderRegistry } from './registry.js'
 import {
   westockRaw as westockRawImpl,
@@ -10,7 +12,7 @@ import {
   type WestockReportRow,
   type WestockStatus,
 } from './westock.js'
-import type { Capability } from '../types.js'
+import type { Capability, ProviderCallResult } from '../types.js'
 
 export { routeCode, type RoutedCode } from './route-code.js'
 import { routeCode } from './route-code.js'
@@ -225,6 +227,64 @@ export class FinanceDataService {
     return this.registry.call('macro', { series }, signal)
   }
 
+  /**
+   * 全球宏观结构化数据（OECD SDMX / Eurostat / World Bank / ECB data-api）。
+   * 工具 get_macro_global 与 HTTP GET /macro/global 共用这一方法：
+   * 每条序列返回 source/unit/asOf(统计期，不是抓取时间)/points/latest/provenance，失败序列显式 error，不补 0。
+   */
+  async getMacroGlobal(series?: string[] | string, signal?: AbortSignal, limit?: number) {
+    return fetchGlobalMacroReport({ series, signal, limit })
+  }
+
+  /**
+   * 港股/美股财务：港股走东财 HKF10（累计口径，非单季），美股走 SEC XBRL
+   * companyfacts（10-K 年度 / 10-Q 单季）。返回 source/currency/rows，缺数据显式 error；
+   * 美股缺 SEC User-Agent 时明确失败，不伪造。缺省不猜市场，调用方必须给 hk/us。
+   */
+  async getGlobalFinancials(code: string, market: 'hk' | 'us' | string, signal?: AbortSignal) {
+    const m = String(market ?? '').trim().toLowerCase()
+    const normalized = m === 'hk' || m === '港股' ? 'hk' : m === 'us' || m === '美股' ? 'us' : undefined
+    if (!normalized) {
+      return {
+        ok: false as const,
+        capability: 'global_financials' as const,
+        data: undefined,
+        error: `market 必须是 hk 或 us（收到：${m || '空'}）`,
+      }
+    }
+    return this.registry.call<GlobalFinancialsResult>('global_financials', { code: String(code ?? '').trim(), market: normalized }, signal)
+  }
+
+  /**
+   * 资金流：优先东财逐日 20 日明细（EM 独占能力 money_flow_detail），失败再回退
+   * 既有 money_flow 链（WeStock 汇总，可再回落 EM）。registry 默认 preferWestock
+   * 会把 ws_* 提到最前，所以必须在这里显式先走 EM 独占能力，否则 get_money_flow
+   * 与 dossier 拿到的会是 WeStock 汇总而不是逐日明细。
+   */
+  async getMoneyFlow(
+    code: string,
+    opts: { days?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<ProviderCallResult<unknown>> {
+    const trimmed = String(code ?? '').trim()
+    if (!trimmed) return { ok: false, capability: 'money_flow', error: 'code is required' }
+    // 东财逐日明细仅 A 股；港美股直接走既有回退链，避免无效请求。
+    if (routeCode(trimmed).market !== 'A股') {
+      return this.registry.call<unknown>('money_flow', { code: trimmed }, signal)
+    }
+    const detail = await this.registry.call<unknown>('money_flow_detail', { code: trimmed, days: opts.days ?? 20 }, signal)
+    if (detail.ok) return detail
+    const fallback = await this.registry.call<unknown>('money_flow', { code: trimmed }, signal)
+    if (fallback.ok) return fallback
+    return {
+      ...fallback,
+      ok: false,
+      capability: 'money_flow',
+      error: `EM 逐日资金流不可用：${detail.error ?? '未知错误'}；回退源失败：${fallback.error ?? '未知错误'}`,
+      attempts: [...(detail.attempts ?? []), ...(fallback.attempts ?? [])],
+    }
+  }
+
   async getSectorBoard(order: 'desc' | 'asc' = 'desc', signal?: AbortSignal) {
     return this.registry.call('sectors', { order }, signal)
   }
@@ -279,6 +339,13 @@ export class FinanceDataService {
    * 新增 CLI 能力只需加一行 spec，无需改 service。
    */
   async westock<T = unknown>(capability: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
+    // 资金流是唯一「已有 WeStock 汇总、又要求 EM 逐日明细优先」的能力：
+    // registry 会提权 ws_*，所以在 service 层显式先走 EM 独占能力再回退。
+    // 显式给 start/end 的调用保持 WeStock 区间语义，不被 20 日窗口覆盖。
+    if (capability === 'money_flow' && args.start === undefined && args.end === undefined) {
+      const days = typeof args.days === 'number' ? { days: args.days } : {}
+      return this.getMoneyFlow(String(args.code ?? ''), days, signal) as Promise<ProviderCallResult<T>>
+    }
     return this.registry.call<T>(capability as Capability, args, signal)
   }
 

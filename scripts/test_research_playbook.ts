@@ -115,25 +115,25 @@ test('区分基金内部服务与已注册工具，不杜撰 get_fund_holdings',
   registered(westockTools, 'get_etf_holdings')
 })
 
-test('全球官方网页路由不是 NBS 独占，不发明全球结构化接口', () => {
+test('全球官方网页与结构化序列口径不扩大', () => {
   const global = section(playbook, '## 5.')
-  includesAll(global, ['cpi/ppi/pmi/gdp/money_supply', '不存在通用全球结构化宏观工具', 'web_search', 'web_fetch', 'BLS', 'BEA', 'Fed', 'ECB', 'Eurostat', 'IMF', 'World Bank', 'OECD', '中国人民银行', '财政部', '海关', 'NBS', '季调', '修订', '预测', '以实际工具 schema 为准', 'global_to_china_impact'])
+  includesAll(global, ['cpi/ppi/pmi/gdp/money_supply', 'get_macro_global', 'us_cpi', 'ea_hicp', 'ea_policy_rate', 'asOf', 'error', '不补 0', 'web_search', 'web_fetch', 'BLS', 'BEA', 'Fed', 'ECB', 'Eurostat', 'IMF', 'World Bank', 'OECD', '中国', '季调', '修订', '预测', 'global_to_china_impact', '全球市场新闻雷达', 'get_global_news_radar', '不代表因果'])
   assert.match(tools, /series: \{ type: 'string', required: true, enum: \['cpi', 'ppi', 'pmi', 'gdp', 'money_supply'\]/)
+  assert.match(tools, /name: 'get_macro_global'/)
+  assert.match(tools, /name: 'get_global_news_radar'/)
   registered(policyTools, 'global_to_china_impact')
-  assert.match(global, /不编造 `get_macro_global`/)
-  assert.match(userDoc, /不存在通用全球结构化宏观工具/)
 })
 
 test('A 股市场范围、资金分类、全球行情和报价时效不扩大', () => {
   const stock = section(playbook, '## 3.')
   includesAll(stock, ['A 股/沪深范围', '不能称「全球市场全景」', '资金分类不是投资者意图', 'probe_finance_sources', '截至时间'])
   includesAll(section(playbook, '## 5.'), ['并非全球所有指数'])
-  includesAll(section(playbook, '## 5.'), ['不是自动核实新闻或全球抓数器', 'macro_catalog', 'macro_indicator', '不编造海外 indicator id'])
+  includesAll(section(playbook, '## 5.'), ['不是自动核实新闻或全球抓数器', 'westock_capabilities', '本机 WeStock CLI 是 Linux 二进制', '资金流是算法统计'])
 })
 
 test('国际 allowlist 拒绝后有合法资料库/授权本地材料通路', () => {
   const policy = section(playbook, '## 6.')
-  includesAll(policy, ['policy_sources', 'policy_import(url)', 'allowlist', '未允许的国际来源不能伪称可直接入政策库', 'save_research', '资料库记录不等于政策库政策 id', '用户合法取得/获授权提供', '.pdf/.html/.md/.txt', '不是修改 allowlist', '不能保证新正文会自动替换或合并原 PDF 条目'])
+  includesAll(policy, ['policy_sources', 'policy_import(url)', 'allowlist', '默认 `enabled:false / kind:manual`', '不表示已核实其 feed 或列表可自动采集', 'save_research', '资料库记录不等于政策库政策 id', '用户合法取得/获授权提供', '.pdf/.html/.md/.txt', '不是修改 allowlist', '不能保证新正文会自动替换或合并原 PDF 条目'])
   assert.match(policyTools, /hosts: deps\.hosts/)
   assert.match(policyTools, /需要 url \/ text \/ filePath 之一/)
   assert.match(policyTools, /docType: \{ type: 'string', enum: \[\.\.\.POLICY_DOC_TYPES\]/)

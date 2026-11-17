@@ -31,7 +31,42 @@ import {
   normalizeValuation,
 } from './eastmoney-f10.js'
 import { WESTOCK_CAPABILITY_PROVIDERS, WESTOCK_SPECS } from './westock-capabilities.js'
+import {
+  createEmMarketDetail,
+  type EmDetailResult,
+  type EmMarketDetailDeps,
+  type EmHttpResponseLike,
+} from './em-market-detail.js'
+import {
+  fetchHkFinancials,
+  fetchUsFinancials,
+  type GlobalFinancialRow,
+  type GlobalFinancialsResult,
+} from './global-financials.js'
 import { normalizeFundHoldingRows, type NormalizedHolding } from '../fund-analysis.js'
+import {
+  GLOBAL_MACRO_DEFAULT_POINTS,
+  GLOBAL_MACRO_MAX_POINTS,
+  GLOBAL_MACRO_SERIES_META,
+  GLOBAL_MACRO_TIMEOUT_MS,
+  applyGlobalMacroPointLimit,
+  assembleGlobalMacroSeries,
+  buildGlobalMacroReport,
+  clampGlobalMacroLimit,
+  globalMacroFailure,
+  hasObservableValue,
+  normalizeSeriesRequest,
+  parseJsonStatDataset,
+  parseSdmxGenericXml,
+  parseSdmxJsonDataset,
+  parseWorldBankIndicator,
+  pickParsedSeriesGroup,
+  type GlobalMacroRepresentation,
+  type GlobalMacroReport,
+  type GlobalMacroSeries,
+  type GlobalMacroSeriesKey,
+  type SeriesParseResult,
+} from './global-macro.js'
 import type { Capability, KlineBar, ProviderContext, ProviderFn, SearchResult, StockInfo, StockQuote, SymbolMatch } from '../types.js'
 
 const execFileAsync = promisify(execFile)
@@ -874,6 +909,351 @@ async function emMacro(args: Record<string, unknown>, ctx: ProviderContext) {
   return { rows, data, sampleKeys: Object.keys(rows[0]!) }
 }
 
+// ---- 全球宏观（OECD SDMX / Eurostat / World Bank / ECB data-api，结构化统计接口）----
+// 解析器在 global-macro.ts（纯函数、fixture 离线测试）；这里只负责 HTTP、序列选取与缓存。
+// 本机实测（2026-11-17）：OECD sdmx.oecd.org 的数据查询 JSON 表示返回 HTTP 500，
+// genericdata XML 正常，因此 us_cpi 先请求 SDMX-JSON，失败/无值再回退 XML 并在 notes 注明。
+// BLS/CNBC 在本机 403，未接入；WeStock CLI 在本机不可执行，也不作为宏观来源。
+
+export const EURO_AREA_GEO_CODES: readonly string[] = ['EA21', 'EA20', 'EA19', 'EA']
+
+const OECD_JSON_ACCEPT = 'application/vnd.sdmx.data+json;version=2.0.0'
+const OECD_XML_ACCEPT = 'application/vnd.sdmx.genericdata+xml;version=2.1'
+const GLOBAL_MACRO_CACHE_TTL_MS = 10 * 60_000
+const GLOBAL_MACRO_FAILURE_TTL_MS = 60_000
+
+/** 可注入的 HTTP 层：测试用假的 json/text，生产用 httpGetJson/httpGetText（自动带 UA/超时）。 */
+export interface GlobalMacroHttp {
+  json: (
+    url: string,
+    params: Record<string, string | number | undefined>,
+    options: { timeoutMs: number; signal?: AbortSignal; headers?: Record<string, string> },
+  ) => Promise<unknown>
+  text: (
+    url: string,
+    params: Record<string, string | number | undefined>,
+    options: { timeoutMs: number; signal?: AbortSignal; headers?: Record<string, string> },
+  ) => Promise<string>
+}
+
+interface GlobalMacroFetchContext {
+  timeoutMs: number
+  signal?: AbortSignal
+}
+
+const DEFAULT_GLOBAL_MACRO_HTTP: GlobalMacroHttp = { json: httpGetJson, text: httpGetText }
+
+function globalMacroErrorText(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err)
+  return raw.replace(/\s+/g, ' ').slice(0, 240)
+}
+
+/** 当前 UTC 月份往前推 N 个月的月初（YYYY-MM），用于构造 startPeriod/sinceTimePeriod。 */
+function monthStartUtc(monthsBack: number): string {
+  const now = new Date()
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsBack, 1))
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+/** OECD SDMX 数据查询（DSD_PRICES：USA / 月度 / 国家CPI / 百分比 / 全部项目 / 未季调 / 同比）。 */
+export function oecdCpiUrl(startPeriod: string): string {
+  const key = 'USA.M.N.CPI.PA._T.N.GY'
+  return `https://sdmx.oecd.org/public/rest/data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/${key}?startPeriod=${encodeURIComponent(startPeriod)}`
+}
+
+/** Eurostat dissemination API：多欧元区聚合口径用重复 geo 参数（`+` 会被解析成空格）。 */
+export function eurostatUrl(
+  dataset: 'prc_hicp_manr' | 'une_rt_m',
+  sinceTimePeriod: string,
+  geos: readonly string[] = EURO_AREA_GEO_CODES,
+): string {
+  const base = `https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/${dataset}?format=JSON&lang=en`
+  const filter = dataset === 'prc_hicp_manr' ? '&coicop=CP00' : '&s_adj=SA&age=TOTAL&sex=T&unit=PC_ACT'
+  const geoQuery = geos.map((geo) => `&geo=${encodeURIComponent(geo)}`).join('')
+  return `${base}${filter}${geoQuery}&sinceTimePeriod=${encodeURIComponent(sinceTimePeriod)}`
+}
+
+/** World Bank Indicators API（年度实际 GDP 增速；欧元区用 EMU 聚合）。 */
+export function worldBankGdpUrl(country: 'USA' | 'EMU'): string {
+  return `https://api.worldbank.org/v2/country/${country}/indicator/NY.GDP.MKTP.KD.ZG?format=json&per_page=20`
+}
+
+/** ECB Data Portal：存款便利利率（DFR）日频水平值。 */
+export function ecbDfrUrl(startPeriod: string): string {
+  return `https://data-api.ecb.europa.eu/service/data/FM/D.U2.EUR.4F.KR.DFR.LEV?format=jsondata&startPeriod=${encodeURIComponent(startPeriod)}`
+}
+
+async function fetchOecdUsCpi(ctx: GlobalMacroFetchContext, http: GlobalMacroHttp): Promise<GlobalMacroSeries> {
+  const fetchedAt = new Date().toISOString()
+  const url = oecdCpiUrl(monthStartUtc(36))
+  const attempts: string[] = []
+  let parsed: SeriesParseResult | undefined
+  let representation: GlobalMacroRepresentation = 'sdmx-json'
+  let representationNote: string | undefined
+
+  try {
+    const payload = await http.json(url, {}, { timeoutMs: ctx.timeoutMs, signal: ctx.signal, headers: { Accept: OECD_JSON_ACCEPT } })
+    const candidate = parseSdmxJsonDataset(payload, { frequency: 'monthly' })
+    if (hasObservableValue(candidate)) parsed = candidate
+    else attempts.push(`SDMX-JSON 无有效观测（${candidate.issues[0] ?? '空结果'}）`)
+  } catch (err) {
+    attempts.push(`SDMX-JSON: ${globalMacroErrorText(err)}`)
+  }
+
+  if (!parsed) {
+    try {
+      const xml = await http.text(url, {}, { timeoutMs: ctx.timeoutMs, signal: ctx.signal, headers: { Accept: OECD_XML_ACCEPT } })
+      parsed = parseSdmxGenericXml(xml, { frequency: 'monthly' })
+      representation = 'sdmx-generic-xml'
+      representationNote = `OECD SDMX-JSON 表示不可用（${attempts.join('；')}），本次回退 genericdata XML 解析`
+    } catch (err) {
+      return globalMacroFailure(
+        'us_cpi',
+        `OECD SDMX 获取失败：${[...attempts, `XML: ${globalMacroErrorText(err)}`].join('；')}`,
+        fetchedAt,
+      )
+    }
+  }
+
+  const group = pickParsedSeriesGroup(parsed.groups)
+  if (!group) {
+    return globalMacroFailure('us_cpi', `OECD SDMX 无可用观测：${parsed.issues.join('；') || '序列为空'}`, fetchedAt)
+  }
+  return assembleGlobalMacroSeries({
+    series: 'us_cpi',
+    observations: group.observations,
+    representation,
+    fetchedAt,
+    provenance: {
+      provider: 'oecd_sdmx',
+      endpoint: url,
+      dataset: 'OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0',
+      indicator: 'USA.M.N.CPI.PA._T.N.GY（全部项目、未季调、同比）',
+      geography: 'USA',
+      frequency: 'monthly',
+      statisticsTimeField: 'TIME_PERIOD',
+      ...(parsed.updated ? { upstreamTimestamp: parsed.updated } : {}),
+      ...(group.key ? { seriesKey: group.key } : {}),
+    },
+    ...(representationNote ? { extraNotes: [representationNote] } : {}),
+    limit: GLOBAL_MACRO_MAX_POINTS,
+  })
+}
+
+async function fetchEurostatSeries(
+  seriesKey: 'ea_hicp' | 'ea_unemployment',
+  ctx: GlobalMacroFetchContext,
+  http: GlobalMacroHttp,
+): Promise<GlobalMacroSeries> {
+  const fetchedAt = new Date().toISOString()
+  const meta = GLOBAL_MACRO_SERIES_META[seriesKey]
+  const dataset = seriesKey === 'ea_hicp' ? 'prc_hicp_manr' : 'une_rt_m'
+  const url = eurostatUrl(dataset, monthStartUtc(48))
+  try {
+    const payload = await http.json(url, {}, { timeoutMs: ctx.timeoutMs, signal: ctx.signal, headers: { Accept: 'application/json' } })
+    const parsed = parseJsonStatDataset(payload, { frequency: 'monthly', seriesDimension: 'geo' })
+    const group = pickParsedSeriesGroup(parsed.groups, EURO_AREA_GEO_CODES)
+    if (!group) {
+      return globalMacroFailure(seriesKey, `Eurostat ${dataset} 无可用观测：${parsed.issues.join('；') || '序列为空'}`, fetchedAt)
+    }
+    const geoLabel = group.label ? `${group.label}（${group.key ?? ''}）` : (group.key ?? meta.geography)
+    const notes = parsed.groups.length > 1
+      ? [`源内返回 ${parsed.groups.length} 个地理口径，按「最新有效统计期 → 观测数 → 首选顺序」选中 ${group.key ?? '默认组'}`]
+      : []
+    return assembleGlobalMacroSeries({
+      series: seriesKey,
+      observations: group.observations,
+      representation: 'jsonstat',
+      fetchedAt,
+      provenance: {
+        provider: 'eurostat',
+        endpoint: url,
+        dataset,
+        indicator: seriesKey === 'ea_hicp' ? 'CP00 / RCH_A（年度变化率）' : 'TOTAL / SA / PC_ACT（季调失业率）',
+        geography: geoLabel,
+        frequency: 'monthly',
+        statisticsTimeField: 'time',
+        ...(parsed.updated ? { upstreamTimestamp: parsed.updated } : {}),
+        ...(group.key ? { seriesKey: group.key } : {}),
+      },
+      extraNotes: notes,
+      limit: GLOBAL_MACRO_MAX_POINTS,
+    })
+  } catch (err) {
+    return globalMacroFailure(seriesKey, `Eurostat ${dataset} 获取失败：${globalMacroErrorText(err)}`, fetchedAt)
+  }
+}
+
+async function fetchWorldBankGdp(
+  seriesKey: 'us_gdp_growth' | 'ea_gdp_growth',
+  country: 'USA' | 'EMU',
+  ctx: GlobalMacroFetchContext,
+  http: GlobalMacroHttp,
+): Promise<GlobalMacroSeries> {
+  const fetchedAt = new Date().toISOString()
+  const url = worldBankGdpUrl(country)
+  try {
+    const payload = await http.json(url, {}, { timeoutMs: ctx.timeoutMs, signal: ctx.signal, headers: { Accept: 'application/json' } })
+    const parsed = parseWorldBankIndicator(payload)
+    const group = pickParsedSeriesGroup(parsed.groups)
+    if (!group) {
+      return globalMacroFailure(seriesKey, `World Bank NY.GDP.MKTP.KD.ZG(${country}) 无可用观测：${parsed.issues.join('；') || '序列为空'}`, fetchedAt)
+    }
+    return assembleGlobalMacroSeries({
+      series: seriesKey,
+      observations: group.observations,
+      representation: 'worldbank-json',
+      fetchedAt,
+      provenance: {
+        provider: 'world_bank',
+        endpoint: url,
+        dataset: 'NY.GDP.MKTP.KD.ZG',
+        indicator: `GDP growth, annual %（country=${country}）`,
+        geography: country === 'EMU' ? 'EMU（Euro area）' : 'USA',
+        frequency: 'annual',
+        statisticsTimeField: 'date',
+        ...(parsed.updated ? { upstreamTimestamp: parsed.updated } : {}),
+        ...(group.key ? { seriesKey: group.key } : {}),
+      },
+      limit: GLOBAL_MACRO_MAX_POINTS,
+    })
+  } catch (err) {
+    return globalMacroFailure(seriesKey, `World Bank NY.GDP.MKTP.KD.ZG(${country}) 获取失败：${globalMacroErrorText(err)}`, fetchedAt)
+  }
+}
+
+async function fetchEcbPolicyRate(ctx: GlobalMacroFetchContext, http: GlobalMacroHttp): Promise<GlobalMacroSeries> {
+  const fetchedAt = new Date().toISOString()
+  const url = ecbDfrUrl(monthStartUtc(6))
+  try {
+    const payload = await http.json(url, {}, {
+      timeoutMs: ctx.timeoutMs,
+      signal: ctx.signal,
+      // ECB data-api 只接受 application/json 一类媒体类型；带 version 参数的 Accept 会 406。
+      headers: { Accept: 'application/json' },
+    })
+    const parsed = parseSdmxJsonDataset(payload, { frequency: 'daily' })
+    const group = pickParsedSeriesGroup(parsed.groups)
+    if (!group) {
+      return globalMacroFailure('ea_policy_rate', `ECB data-api 无可用观测：${parsed.issues.join('；') || '序列为空'}`, fetchedAt)
+    }
+    return assembleGlobalMacroSeries({
+      series: 'ea_policy_rate',
+      observations: group.observations,
+      representation: 'sdmx-json',
+      fetchedAt,
+      provenance: {
+        provider: 'ecb_data_api',
+        endpoint: url,
+        dataset: 'FM',
+        indicator: 'D.U2.EUR.4F.KR.DFR.LEV（存款便利利率水平）',
+        geography: 'Euro area（U2）',
+        frequency: 'daily',
+        statisticsTimeField: 'TIME_PERIOD',
+        ...(parsed.updated ? { upstreamTimestamp: parsed.updated } : {}),
+        ...(group.key ? { seriesKey: group.key } : {}),
+      },
+      limit: GLOBAL_MACRO_MAX_POINTS,
+    })
+  } catch (err) {
+    return globalMacroFailure('ea_policy_rate', `ECB data-api 获取失败：${globalMacroErrorText(err)}`, fetchedAt)
+  }
+}
+
+async function loadGlobalMacroSeries(
+  key: GlobalMacroSeriesKey,
+  ctx: GlobalMacroFetchContext,
+  http: GlobalMacroHttp,
+): Promise<GlobalMacroSeries> {
+  try {
+    switch (key) {
+      case 'us_cpi':
+        return await fetchOecdUsCpi(ctx, http)
+      case 'ea_hicp':
+      case 'ea_unemployment':
+        return await fetchEurostatSeries(key, ctx, http)
+      case 'us_gdp_growth':
+        return await fetchWorldBankGdp(key, 'USA', ctx, http)
+      case 'ea_gdp_growth':
+        return await fetchWorldBankGdp(key, 'EMU', ctx, http)
+      case 'ea_policy_rate':
+        return await fetchEcbPolicyRate(ctx, http)
+      default:
+        return globalMacroFailure(key as GlobalMacroSeriesKey, `未知宏观序列：${String(key)}`, new Date().toISOString())
+    }
+  } catch (err) {
+    return globalMacroFailure(key, `全球宏观序列 ${key} 获取异常：${globalMacroErrorText(err)}`, new Date().toISOString())
+  }
+}
+
+interface GlobalMacroCacheEntry {
+  at: number
+  ttlMs: number
+  value?: Promise<GlobalMacroSeries>
+}
+
+const globalMacroCache = new Map<GlobalMacroSeriesKey, GlobalMacroCacheEntry>()
+
+/** 清空进程内宏观缓存（测试或手动刷新用）。 */
+export function clearGlobalMacroCache(): void {
+  globalMacroCache.clear()
+}
+
+/** 同一序列并发请求合并；成功缓存 10 分钟，失败只缓存 60 秒，避免反复等同一个坏源。 */
+async function globalMacroSeriesWithCache(
+  key: GlobalMacroSeriesKey,
+  ctx: GlobalMacroFetchContext,
+): Promise<{ series: GlobalMacroSeries; cached: boolean }> {
+  const hit = globalMacroCache.get(key)
+  if (hit?.value && Date.now() - hit.at < hit.ttlMs) {
+    return { series: await hit.value, cached: true }
+  }
+  const entry: GlobalMacroCacheEntry = { at: Date.now(), ttlMs: GLOBAL_MACRO_CACHE_TTL_MS }
+  entry.value = loadGlobalMacroSeries(key, ctx, DEFAULT_GLOBAL_MACRO_HTTP).then((series) => {
+    entry.ttlMs = series.error ? GLOBAL_MACRO_FAILURE_TTL_MS : GLOBAL_MACRO_CACHE_TTL_MS
+    return series
+  })
+  globalMacroCache.set(key, entry)
+  return { series: await entry.value, cached: false }
+}
+
+export interface GlobalMacroQuery {
+  /** 序列名列表（也接受逗号分隔字符串）；缺省=全部 6 条。 */
+  series?: string[] | string
+  /** 每条序列返回最近多少期，1..120，默认 24。 */
+  limit?: number
+  timeoutMs?: number
+  signal?: AbortSignal
+  /** 测试注入：给定时不走进程缓存，也不会访问真实网络。 */
+  http?: GlobalMacroHttp
+}
+
+/**
+ * 全球宏观报告：6 条序列并发取回，单条失败不影响其它序列；
+ * 每条都带 source/unit/asOf(统计期)/fetchedAt/points/latest/provenance/notes。
+ */
+export async function fetchGlobalMacroReport(query: GlobalMacroQuery = {}): Promise<GlobalMacroReport> {
+  const fetchedAt = new Date().toISOString()
+  const request = normalizeSeriesRequest(query.series)
+  const limit = clampGlobalMacroLimit(query.limit ?? GLOBAL_MACRO_DEFAULT_POINTS)
+  const ctx: GlobalMacroFetchContext = {
+    timeoutMs: Number.isFinite(Number(query.timeoutMs)) ? Number(query.timeoutMs) : GLOBAL_MACRO_TIMEOUT_MS,
+    signal: query.signal,
+  }
+  const http = query.http
+  const series = await Promise.all(request.keys.map(async (key) => {
+    try {
+      if (http) return applyGlobalMacroPointLimit(await loadGlobalMacroSeries(key, ctx, http), limit, false)
+      const cached = await globalMacroSeriesWithCache(key, ctx)
+      return applyGlobalMacroPointLimit(cached.series, limit, cached.cached)
+    } catch (err) {
+      // 单条序列异常不影响整体；明确 error，不伪造数据。
+      return globalMacroFailure(key, `全球宏观序列 ${key} 获取异常：${globalMacroErrorText(err)}`, fetchedAt)
+    }
+  }))
+  return buildGlobalMacroReport(series, request, fetchedAt)
+}
+
 // ---- 基金排行（东财 rankhandler，akshare fund_open_fund_rank_em 同源）----
 const FUND_RANK_TYPES: Record<string, string> = { all: 'all', stock: 'gp', hybrid: 'hh', bond: 'zq', index: 'zs', qdii: 'qdii', money: 'hb' }
 
@@ -1154,6 +1534,193 @@ async function emStockNews(args: Record<string, unknown>, ctx: ProviderContext) 
   return { rows, data: rows, sampleKeys: Object.keys(rows[0]!) }
 }
 
+// ---------------------------------------------------------------------------
+// T5 东财资金流 / 公司事件明细 + 全球财务（港股东财 HKF10 / 美股 SEC XBRL）
+// 解析与口径在 em-market-detail.ts、global-financials.ts（纯函数、fixture 固定契约）；
+// 这里只负责 HTTP 调用、错误转换（registry 约定：失败 throw，空数据不 throw）与 data 包装。
+// ---------------------------------------------------------------------------
+
+export type EmDetailKind = 'money_flow' | 'announcements' | 'dividend_plan' | 'performance' | 'block_trade' | 'margin_detail'
+
+const EM_DETAIL_KIND_LABELS: Record<EmDetailKind, string> = {
+  money_flow: '资金流',
+  announcements: '公告',
+  dividend_plan: '分红送配',
+  performance: '业绩预告/快报',
+  block_trade: '大宗交易',
+  margin_detail: '融资融券明细',
+}
+
+/** 合并 registry 的取消信号与模块自身的超时信号；任一 abort 即取消。 */
+function combineAbortSignals(a: AbortSignal | undefined, b: AbortSignal | undefined): AbortSignal | undefined {
+  if (!a) return b
+  if (!b) return a
+  const ctrl = new AbortController()
+  const abort = () => { ctrl.abort() }
+  if (a.aborted || b.aborted) ctrl.abort()
+  else {
+    a.addEventListener('abort', abort, { once: true })
+    b.addEventListener('abort', abort, { once: true })
+  }
+  return ctrl.signal
+}
+
+/** 按调用注入超时与取消信号；不写死 UA / 私有配置。 */
+function emDetailClient(ctx: ProviderContext) {
+  const deps: EmMarketDetailDeps = { timeoutMs: ctx.timeoutMs }
+  if (ctx.signal && typeof globalThis.fetch === 'function') {
+    deps.fetch = (url, init) => {
+      const signal = combineAbortSignals(init?.signal, ctx.signal)
+      const requestInit: Record<string, unknown> = { ...(init ?? {}) }
+      if (signal) requestInit.signal = signal
+      return globalThis.fetch(url, requestInit as RequestInit) as unknown as Promise<EmHttpResponseLike>
+    }
+  }
+  return createEmMarketDetail(deps)
+}
+
+export interface EmDetailProviderData<T = unknown> {
+  kind: EmDetailKind
+  /** 实际请求的接口 URL（含参数）。 */
+  source: string
+  /** 数据自身的最新日期（YYYY-MM-DD），不是抓取时间。 */
+  asOf?: string
+  unit: string
+  currency?: 'CNY'
+  rows: T[]
+  count: number
+  /** 抓取时间（ISO），只作溯源，不是数据时点。 */
+  fetchedAt: string
+  warnings?: string[]
+  total?: number
+  page?: number
+  pageSize?: number
+  partial?: boolean
+}
+
+export interface EmDetailProviderPayload<T = unknown> {
+  rows: T[]
+  data: EmDetailProviderData<T>
+  sampleKeys: string[]
+}
+
+/** 纯映射：EmDetailResult → provider 的 {rows,data}；失败 throw（交给 registry 回退）。 */
+export function emDetailProviderPayload<T>(kind: EmDetailKind, result: EmDetailResult<T>): EmDetailProviderPayload<T> {
+  if (!result.ok) throw new Error(result.error ?? `${EM_DETAIL_KIND_LABELS[kind]}取数失败`)
+  const data: EmDetailProviderData<T> = {
+    kind,
+    source: result.source,
+    ...(result.asOf ? { asOf: result.asOf } : {}),
+    unit: result.unit,
+    ...(result.currency ? { currency: result.currency } : {}),
+    rows: result.rows,
+    count: result.count,
+    fetchedAt: result.fetchedAt,
+    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
+    ...(result.total !== undefined ? { total: result.total } : {}),
+    ...(result.page !== undefined ? { page: result.page } : {}),
+    ...(result.pageSize !== undefined ? { pageSize: result.pageSize } : {}),
+    ...(result.partial ? { partial: true } : {}),
+  }
+  const first = result.rows[0]
+  return {
+    rows: result.rows,
+    data,
+    sampleKeys: first && typeof first === 'object' ? Object.keys(first as object) : [],
+  }
+}
+
+function emPerformanceKind(v: unknown): 'all' | 'forecast' | 'express' | undefined {
+  return v === 'all' || v === 'forecast' || v === 'express' ? v : undefined
+}
+
+async function callEmDetail(kind: EmDetailKind, args: Record<string, unknown>, ctx: ProviderContext): Promise<EmDetailResult<unknown>> {
+  const code = String(args.code ?? '').trim()
+  if (!code) throw new Error(`${EM_DETAIL_KIND_LABELS[kind]}：code is required`)
+  const client = emDetailClient(ctx)
+  switch (kind) {
+    case 'money_flow':
+      return client.getFundFlow(code, { days: num(args.days) })
+    case 'announcements':
+      return client.getAnnouncements(code, { page: num(args.page), pageSize: num(args.pageSize) })
+    case 'dividend_plan':
+      return client.getDividends(code, { page: num(args.page), pageSize: num(args.pageSize) })
+    case 'performance':
+      return client.getPerformance(code, {
+        kind: emPerformanceKind(args.kind),
+        page: num(args.page),
+        pageSize: num(args.pageSize),
+      })
+    case 'block_trade':
+      return client.getBlockTrades(code, { page: num(args.page), pageSize: num(args.pageSize) })
+    case 'margin_detail':
+      return client.getMarginTrades(code, { page: num(args.page), pageSize: num(args.pageSize) })
+  }
+}
+
+function emDetailProvider(kind: EmDetailKind): ProviderFn {
+  return async (args, ctx) => emDetailProviderPayload(kind, await callEmDetail(kind, args, ctx))
+}
+
+export interface GlobalFinancialsProviderData {
+  market: 'hk' | 'us'
+  code: string
+  name: string | null
+  /** 美股恒为 USD；港股为各行共同币种，缺失/不一致时 null（不换算）。 */
+  currency: string | null
+  source: string
+  /** 抓取时间（ISO）；不是任何报告期。 */
+  fetchedAt: string
+  rows: GlobalFinancialRow[]
+  profile?: unknown
+  warnings?: string[]
+}
+
+export interface GlobalFinancialsProviderPayload {
+  rows: GlobalFinancialRow[]
+  data: GlobalFinancialsProviderData
+  sampleKeys: string[]
+}
+
+/** 纯映射：GlobalFinancialsResult → provider 的 {rows,data}；失败 throw（缺 SEC UA 也在这里显式失败）。 */
+export function globalFinancialsProviderPayload(result: GlobalFinancialsResult): GlobalFinancialsProviderPayload {
+  if (!result.ok) throw new Error(result.error ?? `${result.market === 'hk' ? '港股' : '美股'}财务取数失败`)
+  const data: GlobalFinancialsProviderData = {
+    market: result.market,
+    code: result.code,
+    name: result.name,
+    currency: result.currency,
+    source: result.source,
+    fetchedAt: result.fetchedAt,
+    rows: result.rows,
+    ...(result.profile ? { profile: result.profile } : {}),
+    ...(result.warnings?.length ? { warnings: result.warnings } : {}),
+  }
+  const first = result.rows[0]
+  return {
+    rows: result.rows,
+    data,
+    sampleKeys: first && typeof first === 'object' ? Object.keys(first) : [],
+  }
+}
+
+/** market 归一：接受 hk/us 或 港股/美股，其它值显式报错（不猜市场）。 */
+export function globalFinancialsMarket(value: unknown): 'hk' | 'us' {
+  const m = String(value ?? '').trim().toLowerCase()
+  if (m === 'hk' || m === '港股') return 'hk'
+  if (m === 'us' || m === '美股') return 'us'
+  throw new Error(`global_financials 需要 market=hk|us（收到：${m || '空'}）`)
+}
+
+async function globalFinancials(args: Record<string, unknown>, ctx: ProviderContext): Promise<GlobalFinancialsProviderPayload> {
+  const code = String(args.code ?? '').trim()
+  if (!code) throw new Error('global_financials：code is required')
+  const market = globalFinancialsMarket(args.market)
+  const options = { timeoutMs: ctx.timeoutMs, ...(ctx.signal ? { signal: ctx.signal } : {}) }
+  const result = market === 'hk' ? await fetchHkFinancials(code, options) : await fetchUsFinancials(code, options)
+  return globalFinancialsProviderPayload(result)
+}
+
 export const PROVIDERS: ProviderMeta[] = [
   {
     id: 'em_a_clist',
@@ -1415,6 +1982,74 @@ export const PROVIDERS: ProviderMeta[] = [
     endpointRef: 'Python ddgs + primp → Bing/Google/Yandex (可选，pip install ddgs)',
     sampleArgs: { query: 'nvidia stock' },
     call: pyWebSearch,
+  },
+
+  // ---- T5 东财资金流 / 公司事件明细 + 全球财务 ----
+  // 条目顺序与 DEFAULT_PROVIDER_ORDER 对齐；放在 WeStock CLI 与 WESTOCK_SPECS 展开之前，
+  // 静态顺序上 EM 优先。注意 registry 默认 preferWestock 会把 ws_* 提前，因此
+  // service.westock('money_flow') 先走 money_flow_detail（EM 独占）再回退 WeStock。
+  {
+    id: 'em_market_detail_money_flow',
+    capability: 'money_flow',
+    endpointRef: 'eastmoney push2his fflow/daykline（逐日 20 日：主力/超大/大/中/小单净额，CNY）',
+    sampleArgs: { code: '600519', days: 20 },
+    call: emDetailProvider('money_flow'),
+  },
+  {
+    id: 'em_market_detail_money_flow_detail',
+    capability: 'money_flow_detail',
+    endpointRef: 'eastmoney push2his fflow/daykline（EM 独占的资金流逐日明细，供 service 优先路由）',
+    sampleArgs: { code: '600519', days: 20 },
+    call: emDetailProvider('money_flow'),
+  },
+  {
+    id: 'em_market_detail_announcements',
+    capability: 'announcements',
+    endpointRef: 'eastmoney np-anotice-stock 公告库（A 股；含原文链接）',
+    sampleArgs: { code: '600519' },
+    call: emDetailProvider('announcements'),
+  },
+  {
+    id: 'em_market_detail_dividend_plan',
+    capability: 'dividend_plan',
+    endpointRef: 'eastmoney datacenter RPT_SHAREBONUS_DET（分红送配：预案/实施/除权，每 10 股口径）',
+    sampleArgs: { code: '600519' },
+    call: emDetailProvider('dividend_plan'),
+  },
+  {
+    id: 'em_market_detail_performance',
+    capability: 'performance',
+    endpointRef: 'eastmoney datacenter 业绩预告 + 业绩快报（A 股；报告期口径）',
+    sampleArgs: { code: '600519' },
+    call: emDetailProvider('performance'),
+  },
+  {
+    id: 'em_market_detail_block_trade',
+    capability: 'block_trade',
+    endpointRef: 'eastmoney datacenter RPT_DATA_BLOCKTRADE（大宗交易逐笔，CNY）',
+    sampleArgs: { code: '600519' },
+    call: emDetailProvider('block_trade'),
+  },
+  {
+    id: 'em_market_detail_block_trade_detail',
+    capability: 'block_trade_detail',
+    endpointRef: 'eastmoney datacenter RPT_DATA_BLOCKTRADE（EM 独占的大宗交易明细）',
+    sampleArgs: { code: '600519' },
+    call: emDetailProvider('block_trade'),
+  },
+  {
+    id: 'em_market_detail_margin_detail',
+    capability: 'margin_detail',
+    endpointRef: 'eastmoney datacenter RPT_MARGIN_DET（融资融券逐日余额/净买入，CNY）',
+    sampleArgs: { code: '600519' },
+    call: emDetailProvider('margin_detail'),
+  },
+  {
+    id: 'global_financials_sources',
+    capability: 'global_financials',
+    endpointRef: '港股：东财 RPT_HKF10_FN_MAININDICATOR（累计口径）；美股：SEC EDGAR companyfacts XBRL（10-K/10-Q；需 DSH_SEC_EDGAR_UA）',
+    sampleArgs: { code: '00700', market: 'hk' },
+    call: globalFinancials,
   },
 
   // ---- WeStock CLI（腾讯自选股，免鉴权）----

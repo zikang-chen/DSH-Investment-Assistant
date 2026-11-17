@@ -1,11 +1,18 @@
 /**
  * Official policy source allowlist.
  *
- * Every entry was reachability-checked from the development machine on
+ * Domestic entries were reachability-checked from the development machine on
  * 2026-11-16 (HTTP 200). `enabled` reflects whether the index page is
  * server-rendered enough to discover document links without a headless browser:
  * disabled entries stay importable by hand (`policy_import <url>`) instead of
  * being silently scraped.
+ *
+ * The international entries added 2026-11-17 are deliberately different: they
+ * were NOT reachability-checked (no network probe was run), ship as
+ * `kind:'manual'` + `enabled:false` so nothing is auto-crawled, and only widen
+ * `decisionHosts` so an operator can import one specific page they opened in a
+ * browser. Their notes say this explicitly; do not read them as verified feeds
+ * or working scrapers.
  *
  * Nothing here bypasses access control: no login, captcha, paywall or
  * anti-bot circumvention. Sites whose terms are unclear ship disabled.
@@ -13,6 +20,16 @@
 import type { PolicySource } from './types.js'
 
 const NBS_NOTE = '国家统计局数据发布；2026-11-16 实测 rss.xml 返回完整条目（含 pubDate），优先走官方 feed。'
+
+/**
+ * Shared caveat for the international entries.
+ *
+ * They are manual-only on purpose: this machine never probed them, and official
+ * sites commonly render lists with scripts, answer non-browser clients with
+ * 403, or disallow crawling in robots.txt. The note must stay honest about that.
+ */
+const INTL_NOTE = (detail: string): string =>
+  `${detail} 该国际站点未在本机线上核实可达，也未验证 feed/列表结构；可能存在脚本渲染、403 或 robots 限制，因此默认关闭、不自动抓取。请在浏览器打开具体页面后用 policy_import(url) 手工导入，仍受站点可达性、robots.txt 与允许清单限制。`
 
 export const DEFAULT_POLICY_SOURCES: PolicySource[] = [
   {
@@ -160,9 +177,150 @@ export const DEFAULT_POLICY_SOURCES: PolicySource[] = [
     minIntervalSec: 5,
     note: '公告检索依赖 POST 接口与动态参数；P0 不实现，公告类暂用手工导入。',
   },
+
+  // ------------------------------------------------------------ international
+  // 2026-11-17 新增：国际官方来源，用于全球政策/数据研究。全部 kind:'manual'
+  // 且 enabled:false——没有联网核实这些域名，自动采集也不可靠（脚本渲染/403/
+  // robots）。这些 hosts 会并入 decisionHosts，因此手工 policy_import(url)
+  // 具体页面可用；允许清单只放行主机，不代表任意页面都可抓取或已验证 feed。
+  {
+    id: 'fed',
+    label: '美联储（Federal Reserve Board）· 货币政策与讲话',
+    hosts: ['www.federalreserve.gov', 'federalreserve.gov'],
+    sourceClass: 'official',
+    issuer: '美国联邦储备委员会（Federal Reserve Board）',
+    kind: 'manual',
+    url: 'https://www.federalreserve.gov/monetarypolicy.htm',
+    docType: 'monetary-report',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('入口指向 FOMC 声明、会议纪要、货币政策报告与主席讲话；入口 URL 仅作提示，具体文档请从页面复制链接导入。'),
+  },
+  {
+    id: 'ecb',
+    label: '欧洲中央银行（ECB）· 货币政策决议与报告',
+    hosts: ['www.ecb.europa.eu', 'ecb.europa.eu'],
+    sourceClass: 'official',
+    issuer: '欧洲中央银行（European Central Bank）',
+    kind: 'manual',
+    url: 'https://www.ecb.europa.eu/press/html/index.en.html',
+    docType: 'monetary-report',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('入口指向货币政策决议、会议纪要（accounts）、经济公报与讲话；具体文档请从页面复制链接导入。'),
+  },
+  {
+    id: 'bls',
+    label: '美国劳工统计局（BLS）· 就业与物价数据发布',
+    hosts: ['www.bls.gov', 'bls.gov'],
+    sourceClass: 'official',
+    issuer: '美国劳工统计局（U.S. Bureau of Labor Statistics）',
+    kind: 'manual',
+    url: 'https://www.bls.gov/news.release/',
+    docType: 'statistics',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('CPI、PPI、就业形势（Employment Situation）等数据发布与新闻稿；发布页通常能定位到当月文件。'),
+  },
+  {
+    id: 'bea',
+    label: '美国经济分析局（BEA）· 国民经济核算数据',
+    hosts: ['www.bea.gov', 'bea.gov'],
+    sourceClass: 'official',
+    issuer: '美国经济分析局（U.S. Bureau of Economic Analysis）',
+    kind: 'manual',
+    url: 'https://www.bea.gov/data',
+    docType: 'statistics',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('GDP、个人收入与支出、PCE 物价指数等国民经济核算发布；数据页与新闻稿按发布日组织。'),
+  },
+  {
+    id: 'imf',
+    label: '国际货币基金组织（IMF）· 世界经济展望与国别报告',
+    hosts: ['www.imf.org', 'imf.org'],
+    sourceClass: 'official',
+    issuer: '国际货币基金组织（International Monetary Fund）',
+    kind: 'manual',
+    url: 'https://www.imf.org/en/Publications',
+    docType: 'other',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('《世界经济展望》《全球金融稳定报告》、Article IV 国别磋商与工作论文；体裁横跨报告/表态，默认 docType=other，导入时请按实际文件覆盖。'),
+  },
+  {
+    id: 'world-bank',
+    label: '世界银行（World Bank）· 发展报告与国别研究',
+    hosts: ['www.worldbank.org', 'worldbank.org'],
+    sourceClass: 'official',
+    issuer: '世界银行集团（World Bank Group）',
+    kind: 'manual',
+    url: 'https://www.worldbank.org/en/research',
+    docType: 'other',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('《世界发展报告》、国别经济备忘录（CEM）与发展数据出版物；默认 docType=other，导入时请按实际文件覆盖。'),
+  },
+  {
+    id: 'oecd',
+    label: '经济合作与发展组织（OECD）· 经济展望与政策研究',
+    hosts: ['www.oecd.org', 'oecd.org'],
+    sourceClass: 'official',
+    issuer: '经济合作与发展组织（OECD）',
+    kind: 'manual',
+    url: 'https://www.oecd.org/',
+    docType: 'other',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('《经济展望》、Going for Growth、国别经济调查与政策工作论文；默认 docType=other，导入时请按实际文件覆盖。'),
+  },
+  {
+    id: 'eurostat',
+    label: '欧盟统计局（Eurostat）· 欧盟统计数据',
+    hosts: ['ec.europa.eu'],
+    sourceClass: 'official',
+    issuer: '欧盟统计局（Eurostat）',
+    kind: 'manual',
+    url: 'https://ec.europa.eu/eurostat',
+    docType: 'statistics',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('HICP、失业率、GDP 等欧盟统计口径数据与统计说明。注意 ec.europa.eu 同时承载欧盟委员会其他页面：允许清单只放行主机，不代表任意页面都可抓取。'),
+  },
+  {
+    id: 'bis',
+    label: '国际清算银行（BIS）· 央行研究与统计',
+    hosts: ['www.bis.org', 'bis.org'],
+    sourceClass: 'official',
+    issuer: '国际清算银行（Bank for International Settlements）',
+    kind: 'manual',
+    url: 'https://www.bis.org/',
+    docType: 'other',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('年度/季度报告、央行统计与工作论文；默认 docType=other，导入时请按实际文件覆盖。'),
+  },
+  {
+    id: 'us-treasury',
+    label: '美国财政部（U.S. Treasury）· 财政、债务与制裁信息',
+    hosts: ['home.treasury.gov', 'treasury.gov'],
+    sourceClass: 'official',
+    issuer: '美国财政部（U.S. Department of the Treasury）',
+    kind: 'manual',
+    url: 'https://home.treasury.gov/',
+    docType: 'fiscal-report',
+    enabled: false,
+    minIntervalSec: 5,
+    note: INTL_NOTE('财政与债务数据、政策新闻稿、OFAC 制裁行动公告；制裁类文件导入时请把 docType 改为 other。'),
+  },
 ]
 
-/** The allowlist that actually governs every fetch: union of enabled sources' hosts. */
+/**
+ * The allowlist that actually governs every fetch: union of ALL sources' hosts
+ * (enabled or not), so a disabled / manual-only source can still be imported by
+ * handing `policy_import` one specific URL. Enabling a source does not widen this
+ * list by itself, and robots.txt is still enforced per fetch.
+ */
 export function decisionHosts(sources: PolicySource[]): string[] {
   const hosts = new Set<string>()
   for (const s of sources) for (const h of s.hosts) hosts.add(h)

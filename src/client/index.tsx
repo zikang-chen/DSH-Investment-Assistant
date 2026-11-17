@@ -2,6 +2,7 @@ import { PersonalHome } from './personal-home.js'
 import { FinanceTheme, ThemeControls, formatNumber, formatPercent } from './design-system/index.js'
 import { OverviewWorkbench, InvestmentWorkbench } from './workbench.js'
 import { WORKSPACE_CSS } from './workspace-styles.js'
+import { FundWorkspace } from './fund-workspace.js'
 import { KlineChart } from './kline-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
 import { CapitalWorkspace, WealthWorkspace } from './capital-workspace.js'
@@ -1403,6 +1404,7 @@ function HoldingsView(props: {
 
 // ---- 宏观 tab ----
 interface MacroSeries { series: string; label?: string; unit?: string; latest?: { time: string; value?: number }; points?: Array<{ time: string; value?: number }>; error?: string }
+interface GlobalMacroSeries extends MacroSeries { source?: string; fetchedAt?: string; notes?: string; provenance?: string }
 function MacroView(props: { active: boolean }) {
   const [series, setSeries] = useState<MacroSeries[]>([])
   const [loading, setLoading] = useState(false)
@@ -1451,85 +1453,11 @@ function MacroView(props: { active: boolean }) {
                     }, typeof val === 'number' ? `${val}${s.unit || ''}` : '—'),
                     h(Sparkline, { data: pts.slice(-24), color: dir, w: 74 })))
             }))),
+    h(GlobalMacroSection, null),
     h('div', { style: { ...S.muted, fontSize: 11, padding: '0 2px' } }, '数据源：东财 datacenter（对照 AkShare macro_china_*）· 百分比为与 12 期前对比'))
 }
 
 // ---- 基金 tab ----
-interface FundRankRow { code: string; name: string; date: string; nav?: number; m1?: number; m3?: number; m6?: number; y1?: number; y2?: number; y3?: number; ytd?: number }
-const FUND_TYPES: Array<{ v: string; label: string }> = [
-  { v: 'all', label: '全部' }, { v: 'stock', label: '股票' }, { v: 'hybrid', label: '混合' },
-  { v: 'bond', label: '债券' }, { v: 'index', label: '指数' }, { v: 'qdii', label: 'QDII' },
-]
-/** 排序周期 pills：与 get_fund_rank 的 sortBy 枚举一一对应。 */
-const FUND_SORTS: Array<{ v: string; label: string }> = [
-  { v: 'm1', label: '近1月' }, { v: 'm3', label: '近3月' }, { v: 'm6', label: '近6月' },
-  { v: 'y1', label: '近1年' }, { v: 'y3', label: '近3年' }, { v: 'ytd', label: '今年来' },
-]
-const fundPillStyle = (on: boolean): CSSProperties => ({
-  ...S.btn, padding: '3px 9px', borderRadius: 999, border: `1px solid ${on ? BRAND : R.line}`,
-  background: on ? BRAND_SOFT : S.btn.background,
-  color: on ? BRAND : S.btn.color,
-  fontWeight: on ? 600 : 400,
-})
-function FundsView(props: { active: boolean; mutate: (a: string, p: Record<string, unknown>) => void }) {
-  const [type, setType] = useState('all')
-  const [sort, setSort] = useState('m6')
-  const [rows, setRows] = useState<FundRankRow[]>([])
-  const [loading, setLoading] = useState(false)
-  const [added, setAdded] = useState<Record<string, boolean>>({})
-  const load = useCallback(async (t: string, s: string) => {
-    setLoading(true)
-    try { const r = await apiGet<{ ok: boolean; rows: FundRankRow[] }>(`/fundrank?type=${t}&size=20&sort=${s}`); setRows(r.ok ? r.rows : []) } catch { setRows([]) } finally { setLoading(false) }
-  }, [])
-  useEffect(() => { if (props.active) void load(type, sort) }, [props.active, type, sort]) // eslint-disable-line react-hooks/exhaustive-deps
-  const sortLabel = FUND_SORTS.find((s) => s.v === sort)?.label ?? '近6月'
-  const valOf = (r: FundRankRow): number | undefined => (r as unknown as Record<string, number | undefined>)[sort]
-  const maxAbs = Math.max(1, ...rows.map((r) => Math.abs(valOf(r) ?? 0)))
-  return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
-    h('div', { style: S.group },
-      h('div', { style: S.groupHead },
-        h('div', { style: { ...S.title, marginBottom: 0 } }, `开放式基金排行 · ${sortLabel}`),
-        h('span', { style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, loading ? '加载中…' : `${rows.length} 只`),
-        h('button', { style: { ...S.btn, padding: '2px 8px' }, onClick: () => void load(type, sort), disabled: loading }, loading ? '…' : '刷新')),
-      h('div', { style: { padding: 9, display: 'flex', flexDirection: 'column', gap: 8 } },
-        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4 } },
-          FUND_TYPES.map((t) => h('button', { key: t.v, onClick: () => setType(t.v), style: fundPillStyle(type === t.v) }, t.label))),
-        // 排序周期：切周期即重新请求排行榜（服务端按东财 sc 参数排序）。
-        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4 } },
-          h('span', { style: { ...S.muted, fontSize: 11, alignSelf: 'center', marginRight: 2 } }, '周期'),
-          FUND_SORTS.map((s) => h('button', { key: s.v, onClick: () => setSort(s.v), style: fundPillStyle(sort === s.v) }, s.label))),
-        loading
-          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-            h(Skeleton, { w: '100%', h: 34 }), h(Skeleton, { w: '100%', h: 34 }), h(Skeleton, { w: '100%', h: 34 }))
-          : rows.length === 0
-            ? h(EmptyState, { icon: h(IconChart, { size: 20 }), text: '暂无基金排行数据，点刷新重试。' })
-            : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-              rows.map((r, i) => {
-                const v = valOf(r)
-                const c = colorOf(v)
-                return h('div', { key: r.code, className: 'dsn-row', style: { ...S.card, gap: 4, padding: '7px 10px' } },
-                  h('div', { style: { display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 } },
-                    h('span', { style: { ...S.muted, width: 16, fontSize: 11, fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' } }, String(i + 1)),
-                    h('div', { style: { flex: 1, minWidth: 0 } },
-                      h(SecurityLink, { item: { code: r.code, name: r.name, type: 'fund' } }),
-                      h('div', { style: { ...S.muted, fontSize: 10.5 } }, `${r.code} · 净值 ${fmt(r.nav, 4)}${r.date ? ` · ${r.date}` : ''}`)),
-                    h('div', { style: { textAlign: 'right', flex: '0 0 auto' } },
-                      h('div', { style: { color: c, fontWeight: 600, fontSize: 12, fontVariantNumeric: 'tabular-nums' } }, pctStr(v)),
-                      // 次要行：近1年固定显示，另有近2年/近3年字段（东财 f[12]/f[13]）就一起给。
-                      h('div', { style: { ...S.muted, fontSize: 10 } },
-                        `近1年 ${pctStr(r.y1)}${r.y3 !== undefined ? ` · 近3年 ${pctStr(r.y3)}` : r.y2 !== undefined ? ` · 近2年 ${pctStr(r.y2)}` : ''}`)),
-                    h('button', {
-                      style: { ...S.btn, padding: '1px 7px', flex: '0 0 auto', color: added[r.code] ? SUCCESS : S.btn.color },
-                      title: '加入自选（基金）',
-                      onClick: () => { props.mutate('addWatch', { code: r.code, type: 'fund', name: r.name }); setAdded((a) => ({ ...a, [r.code]: true })) },
-                    }, added[r.code] ? '✓' : '＋')),
-                  // 周期涨跌条：排序之外再看量级
-                  h('div', { style: { display: 'flex', height: 4, borderRadius: 999, background: `color-mix(in srgb, ${c} 10%, transparent)`, overflow: 'hidden' } },
-                    h('div', { style: { width: `${Math.max(3, (Math.abs(v ?? 0) / maxAbs) * 100)}%`, background: c } })))
-              })))),
-    h('div', { style: { ...S.muted, fontSize: 11, padding: '0 2px' } }, '数据源：东财基金排行（对照 AkShare fund_open_fund_rank_em）· 净值日期 T+1 更新'))
-}
-
 // ---- 板块热度（原「市场」tab 已并入「行情」：领涨/领跌与指数总览同屏）----
 /** 板块行：上游字段名有 changePct（WeStock）与 changePercent（东财）两种，这里都兼容。 */
 interface Sector { code: string; name: string; price?: number; changePct?: number | string; changePercent?: number; mainNetInflow?: string; leader?: string }
@@ -1593,6 +1521,105 @@ function SectorsPanel() {
 }
 
 // ---- 快讯 tab（市场电报 + 按持仓/自选的个股新闻）----
+
+/** Global structured macro; sources are official OECD/Eurostat/ECB/World Bank adapters. */
+function GlobalMacroSection() {
+  const [series, setSeries] = useState<GlobalMacroSeries[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [at, setAt] = useState('')
+  const load = useCallback(async () => {
+    setLoading(true); setError('')
+    try {
+      const r = await apiGet<{ ok?: boolean; fetchedAt?: string; series?: GlobalMacroSeries[]; error?: string }>('/macro/global')
+      if (r.ok === false) throw new Error(r.error || '全球宏观读取失败')
+      setSeries(r.series ?? []); setAt(r.fetchedAt ?? '')
+    } catch (err) { setError(errText(err)) } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { void load() }, [load])
+  return h('div', { style: S.group },
+    h('div', { style: S.groupHead },
+      h('div', { style: { ...S.title, marginBottom: 0 } }, '全球宏观 · 官方结构化数据'),
+      h('span', { style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, loading ? '加载中…' : at ? '抓取 ' + at.slice(0, 16).replace('T', ' ') : '未读取'),
+      h('button', { style: { ...S.btn, padding: '2px 8px' }, onClick: () => void load(), disabled: loading }, loading ? '…' : '刷新')),
+    h('div', { style: { padding: 9, display: 'flex', flexDirection: 'column', gap: 8 } },
+      error
+        ? h('div', { role: 'alert', style: { ...S.muted, color: DANGER, fontSize: 12, lineHeight: 1.7 } }, '全球宏观读取失败：' + error + '。这不等于“没有数据”，可稍后重试。')
+        : loading && series.length === 0
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 60 }), h(Skeleton, { w: '90%', h: 60 }))
+          : series.length === 0
+            ? h(EmptyState, { icon: h(IconChart, { size: 20 }), text: '暂无全球宏观数据。美国 CPI 使用 OECD 月度口径，欧元区使用 Eurostat/ECB，GDP 为世界银行年度口径。' })
+            : h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 6 } },
+              series.map((item) => {
+                const value = item.latest?.value
+                const points = (item.points ?? []).map(p => p.value).filter((n): n is number => typeof n === 'number')
+                const dir = points.length >= 2 ? (points[points.length - 1]! >= points[0]! ? UP : DOWN) : BRAND
+                const source = item.source || item.provenance || '来源未注明'
+                return h('div', { key: item.series, style: { ...S.card, gap: 3, padding: '9px 10px', minWidth: 0 } },
+                  h('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline', minWidth: 0 } },
+                    h('span', { style: { fontWeight: 600, fontSize: 11.5, flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: (item.label ?? item.series) + ' · ' + source }, item.label || item.series),
+                    h('span', { style: { ...S.muted, fontSize: 10, flex: '0 0 auto' } }, item.unit || '')),
+                  h('span', { style: { ...S.muted, fontSize: 10 } }, (item.latest?.time ?? '期间未知') + ' · ' + source),
+                  item.error
+                    ? h('span', { style: { ...S.muted, fontSize: 11, color: WARNING } }, item.error)
+                    : h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } },
+                      h('span', { style: { fontSize: 19, fontWeight: 700, color: dir, fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' } }, typeof value === 'number' ? value + (item.unit || '') : '—'),
+                      h(Sparkline, { data: points.slice(-24), color: dir, w: 70 })),
+                  item.notes ? h('span', { style: { ...S.muted, fontSize: 10, lineHeight: 1.5 } }, item.notes) : null)
+              })),
+      h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：OECD / Eurostat / ECB / World Bank 官方接口；统计期、单位与修订口径以各源为准。缺失或失败会明示，不补 0。')))
+}
+
+/** Official-source news radar; score is relative importance inside covered sources, not causality. */
+function NewsRadarSection() {
+  interface RadarItem { id: string; title: string; url?: string; source?: string; publishedAt?: string; eventType?: string; score: number; reasons?: string[]; eventReason?: string }
+  const [items, setItems] = useState<RadarItem[]>([])
+  const [hours, setHours] = useState(168)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [at, setAt] = useState('')
+  const load = useCallback(async (windowHours: number) => {
+    setLoading(true); setError('')
+    try {
+      const r = await apiGet<{ ok?: boolean; items?: RadarItem[]; fetchedAt?: string; error?: string }>('/news/radar?hours=' + windowHours + '&limit=12')
+      if (r.ok === false) throw new Error(r.error || '雷达读取失败')
+      setItems(r.items ?? []); setAt(r.fetchedAt ?? '')
+    } catch (err) { setError(errText(err)) } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { void load(hours) }, [load]) // eslint-disable-line react-hooks/exhaustive-deps
+  const openUrl = (url?: string) => { if (url) window.open(url, '_blank', 'noopener') }
+  return h('div', { style: S.group },
+    h('div', { style: S.groupHead },
+      h('div', { style: { ...S.title, marginBottom: 0 } }, '全球市场雷达 · 官方一手消息'),
+      h('span', { style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, loading ? '抓取中…' : items.length + ' 条 · ' + (at ? at.slice(0, 16).replace('T', ' ') : '')),
+      h('select', { style: { ...S.input, width: 92, flex: '0 0 auto' }, value: String(hours), onChange: (e: any) => { const next = Number(e.target.value); setHours(next); void load(next) } },
+        h('option', { value: '24' }, '近 24 小时'), h('option', { value: '72' }, '近 3 天'), h('option', { value: '168' }, '近 7 天')),
+      h('button', { style: { ...S.btn, padding: '2px 8px' }, onClick: () => void load(hours), disabled: loading }, loading ? '…' : '刷新')),
+    h('div', { style: { padding: 9, display: 'flex', flexDirection: 'column', gap: 7 } },
+      error
+        ? h('div', { role: 'alert', style: { ...S.muted, color: DANGER, fontSize: 12, lineHeight: 1.7 } }, '全球雷达读取失败：' + error + '。可重试；这不会用本地缓存冒充最新消息。')
+        : loading && items.length === 0
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 42 }), h(Skeleton, { w: '92%', h: 42 }))
+          : items.length === 0
+            ? h(EmptyState, { icon: h(IconChart, { size: 18 }), text: at ? '该时间窗内暂无覆盖源发布的消息。' : '暂无官方源消息。' })
+            : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+              items.map((item) => h('div', {
+                key: item.id, className: 'dsn-row',
+                style: { ...S.card, gap: 4, padding: '8px 10px', cursor: item.url ? 'pointer' : 'default' },
+                onClick: () => openUrl(item.url),
+              },
+                h('div', { style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', fontSize: 10 } },
+                  h('span', { style: { ...S.tag, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, '重要度 ' + item.score.toFixed(0)),
+                  item.source ? h('span', { style: S.tag }, item.source) : null,
+                  item.eventType ? h('span', { style: { ...S.tag, color: BRAND } }, item.eventType) : null,
+                  h('span', { style: { ...S.muted, marginLeft: 'auto' } }, item.publishedAt ? item.publishedAt.slice(0, 16).replace('T', ' ') : '时间未知')),
+                h('div', { style: { fontWeight: 500, fontSize: 12, lineHeight: 1.55 } }, item.title),
+                item.eventReason || item.reasons?.length
+                  ? h('div', { style: { ...S.muted, fontSize: 10, lineHeight: 1.55 } }, [item.eventReason, ...(item.reasons ?? [])].filter(Boolean).slice(0, 4).join(' · '))
+                  : null))),
+      h('div', { style: { ...S.muted, fontSize: 10.5, lineHeight: 1.6 } }, '排序是「已覆盖官方源范围内的相对重要性」（来源权威 + 事件类型 + 时间衰减），不代表因果或涨跌预测。默认仅官方源：Fed / ECB / BIS / SEC / BoE；媒体源不默认启用。')))
+}
+
 interface Flash { title: string; summary?: string; time?: string; url?: string }
 interface SNews { title: string; date?: string; source?: string; url?: string; summary?: string }
 function NewsView(props: { active: boolean; data: LiveData; quoteBy: Map<string, LiveQuote> }) {
@@ -1627,6 +1654,7 @@ function NewsView(props: { active: boolean; data: LiveData; quoteBy: Map<string,
   const kw = q.trim().toLowerCase()
   const shown = kw ? flash.filter((n) => `${n.title} ${n.summary ?? ''}`.toLowerCase().includes(kw)) : flash
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+    h(NewsRadarSection, null),
     h('div', { style: S.group },
       h('div', { style: S.groupHead },
         h('div', { style: { ...S.title, marginBottom: 0 } }, '个股新闻 · 按持仓/自选'),
@@ -3983,7 +4011,7 @@ function PanelBody(props: {
         klineTarget,
       }) : null,
       tab === 'holdings' ? h(HoldingsView, { data, quoteBy, mutate, onOpen: props.onOpenAnalysis, holdingDraft, onHoldingDraftChange: setHoldingDraft }) : null,
-      tab === 'funds' ? h(FundsView, { active: tab === 'funds', mutate }) : null,
+      tab === 'funds' ? h(FundWorkspace, { get: apiGet, active: tab === 'funds', onOpenFund: (item) => { setSecurityReturnTab('funds'); setDossierTarget({ ...item, at: Date.now() }); selectTab('dossier') } }) : null,
       tab === 'macro' ? h(MacroView, { active: tab === 'macro' }) : null,
       tab === 'policy' ? h(PolicyView, { deliver: deliverToChat, focus: policyFocus }) : null,
       tab === 'news' ? h(NewsView, { active: tab === 'news', data, quoteBy }) : null,

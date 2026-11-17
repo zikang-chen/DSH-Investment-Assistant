@@ -54,6 +54,7 @@ import { CATEGORY_LABEL, LEVEL_LABEL, searchConcepts, type ConceptCategory, type
 import { categorySummary, explain as explainConcept, type LearnStatus } from './learn/explain.js'
 import type { AssetType } from './types.js'
 import { ValidationError, validateAssetType, validateCode, validateDate, validateMarketKind } from './validation.js'
+import { fetchAndBuildGlobalNewsRadar } from './news/global-radar.js'
 
 /** Keep SSE connections alive through proxies/idle timeouts. */
 const SSE_HEARTBEAT_MS = 20_000
@@ -1057,6 +1058,18 @@ export function registerRoutes(
           }))
           return sendJson(res, 200, { at: new Date().toISOString(), series: out })
         }
+        // 全球宏观（OECD SDMX / Eurostat / World Bank / ECB data-api）：与工具 get_macro_global
+        // 共用 finance.getMacroGlobal；asOf 是统计期，fetchedAt 是抓取时间，失败序列带 error。
+        if (req.method === 'GET' && sub === '/macro/global') {
+          const requested = (url.searchParams.get('series') ?? '')
+            .split(/[,，\s]+/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+          const rawLimit = url.searchParams.get('limit')
+          const limit = rawLimit === null ? undefined : Number(rawLimit)
+          const report = await finance.getMacroGlobal(requested.length ? requested : undefined, undefined, limit)
+          return sendJson(res, 200, report)
+        }
         if (req.method === 'GET' && sub === '/fundrank') {
           const fundType = url.searchParams.get('type') ?? 'all'
           const size = Number(url.searchParams.get('size') ?? 20)
@@ -1105,6 +1118,59 @@ export function registerRoutes(
           }
           const r = await finance.getNewsFlash(25)
           return sendJson(res, 200, { ok: r.ok, news: r.ok && Array.isArray(r.data) ? r.data : [], error: r.ok ? undefined : r.error })
+        }
+        // 全球市场新闻雷达：只抓已核实的官方源，重要性是覆盖范围内的相对分数，不是因果判断。
+        if (req.method === 'GET' && sub === '/news/radar') {
+          const rawHours = Number(url.searchParams.get('hours') ?? '168')
+          const hours = Number.isFinite(rawHours) ? Math.min(720, Math.max(1, Math.trunc(rawHours))) : 168
+          const rawLimit = Number(url.searchParams.get('limit') ?? '12')
+          const limit = Number.isFinite(rawLimit) ? Math.min(50, Math.max(1, Math.trunc(rawLimit))) : 12
+          const keywords = (url.searchParams.get('keywords') ?? '').split(/[,，\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 20)
+          try {
+            const run = await fetchAndBuildGlobalNewsRadar({
+              now: new Date().toISOString(),
+              windowHours: hours,
+              maxItems: limit,
+              ...(keywords.length ? { relevance: { keywords, label: '持仓/自选' } } : {}),
+            })
+            return sendJson(res, 200, {
+              ok: true,
+              fetchedAt: run.radar.generatedAt,
+              hours,
+              items: run.radar.items.map(item => ({
+                id: item.id,
+                title: item.title,
+                url: item.link ?? undefined,
+                source: item.sourceName,
+                sourceId: item.sourceId,
+                authority: item.authority,
+                eventType: item.eventType,
+                publishedAt: item.publishedAt ?? undefined,
+                score: item.score.total,
+                scoreComponents: item.score.components,
+                reasons: item.score.reasons,
+                eventReason: item.eventReason,
+              })),
+              stats: run.radar.stats,
+              feedDiagnostics: run.radar.feedDiagnostics,
+              disclaimer: run.radar.disclaimer,
+            })
+          } catch (err) {
+            return sendJson(res, 502, { ok: false, error: err instanceof Error ? err.message : String(err), items: [] })
+          }
+        }
+        // 基金净值走势：用于基金详情页画净值曲线（不是实时成交价，日期即净值日）。
+        if (req.method === 'GET' && sub === '/fund/kline') {
+          const code = validateCode(url.searchParams.get('code') ?? '')
+          const r = await finance.getFundKline(code)
+          const rows = r.ok && Array.isArray(r.data) ? r.data as unknown as Array<Record<string, unknown>> : []
+          return sendJson(res, 200, {
+            ok: r.ok,
+            code,
+            provider: r.provider,
+            series: rows.map(row => ({ date: String(row.date ?? row.time ?? ''), nav: typeof row.nav === 'number' ? row.nav : typeof row.close === 'number' ? row.close : null })),
+            error: r.ok ? undefined : r.error,
+          })
         }
         // 个股深度档案：一次并发取回该标的在 WeStock 上的全部维度（研究/资金/股东/风险/资讯/产业链）。
         // type=fund 走基金专属档案（股票 18 维对基金大多 unsupported/噪音）。

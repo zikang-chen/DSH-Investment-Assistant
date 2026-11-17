@@ -70,9 +70,9 @@
 
 `get_macro_china(series)` 只有 `cpi/ppi/pmi/gdp/money_supply`，由东财提供中国序列，不等于全球数据或全部中国官方统计。中国可按问题补人民银行、财政部、海关等官方原文，不仅国家统计局（NBS）。
 
-**不存在通用全球结构化宏观工具**。全球公开数据用当前可用的 `web_search` / `web_fetch` 查官方发布/表格，并记录以下口径；工具缺失、脚本页面无正文、权限限制或原文下载失败都要公开说明。
+**已接入的全球结构化宏观**：`get_macro_global(series)` 返回 6 条真实序列——`us_cpi`（OECD 月度同比）、`ea_hicp` / `ea_unemployment`（Eurostat 月度）、`us_gdp_growth` / `ea_gdp_growth`（World Bank 年度）、`ea_policy_rate`（ECB 日频）。每条带 `source/asOf/unit/fetchedAt/points/latest/provenance/notes`；失败或空值给 `error`，不补 0。口径与缺口：BLS/CNBC 在本机 403 未接入；Eurostat HICP 可能滞后；OECD 的数据查询 JSON 在本机 500，已回退 genericdata XML；不同国家/地区的季调、同比环比、年化与修订版不可混用。全球官方网页仍可 `web_search` / `web_fetch` 补充，但不能把网页检索说成结构化接口。
 
-| 官方来源入口（只作检索入口，不保证已取到数据） | 常见问题与核对项 |
+| 官方来源入口（检索/核对入口） | 常见问题与核对项 |
 | --- | --- |
 | [BLS](https://www.bls.gov/) | 美国 CPI/就业；季调、同比/环比、初值修订 |
 | [BEA](https://www.bea.gov/) | 美国 GDP/PCE；年化季率、价格/数量口径、修订批次 |
@@ -81,16 +81,20 @@
 | [IMF](https://www.imf.org/) / [World Bank](https://www.worldbank.org/) / [OECD](https://www.oecd.org/) | 全球/国家比较；预测还是实绩、报告版次、可比口径 |
 | [中国人民银行](https://www.pbc.gov.cn/) / [财政部](https://www.mof.gov.cn/) / [海关总署](http://www.customs.gov.cn/) / [NBS](https://www.stats.gov.cn/) | 信贷货币、财政、贸易、实体数据；存量/增量、累计/单月 |
 
-这些网址不是硬编码的新 API。`web_search` 的本项目定义用 `query`，宿主在当前会话也可能提供 `queries`；**以实际工具 schema 为准**，不混用两个签名。`web_fetch(url)` 的全文仍可能只含可见网页/被截断部分，不能自动推断图表隐藏序列。
+**全球市场新闻雷达**：`get_global_news_radar(hours,limit,keywords)` 只默认抓已核实的官方源（Fed/ECB/BIS/SEC/BoE）。分数是“已覆盖源范围内的相对重要性”（来源权威 + 事件类型 + 一手性 + 时间衰减 + 可选跨资产反应/关键词），**不代表因果或涨跌预测，也不能说全市场最重要**；媒体源默认关闭。使用时引用来源、发布时间、事件类型和分数分项，说明窗口与覆盖源。
 
-市场数据同理：项目已有 A/H/美股行情与 K 线，并非全球所有指数、外汇、债券、商品实时行情；只有在实际检索到并核对的来源上才能比较。不编造 `get_macro_global`、全球行情全覆盖或汇率工具。WeStock 如需扩展，先 `westock_capabilities` / `macro_catalog` 发现，再按实际目录指标调用 `macro_indicator`，不编造海外 indicator id 或把目录当已取到的数值。
+**美/港财务**：`get_global_financials(code,market)`；美股来自 SEC XBRL（10-K 年度、10-Q 单季，20-F 等非目标表单会明确失败），需 `DSH_SEC_EDGAR_UA` 含可联系邮箱，缺失时不得伪造；港股来自东财 HKF10 主要指标，中报/季报是**年初至今累计**，币种以返回为准。两者文本/披露均可能滞后，不能把 HK 累计当单季、也不能把 SEC 抓取时间当报告期。
+
+A 股资金流/公司事件：`stock_dossier` 的 `money_flow`（20 日逐日主力/大单/超大单/中单/小单净额与占比）、`announcements`、`dividend_plan`、`performance`（预告与快报）、`block_trade`、`margin_detail`。资金流是算法统计，不是公司现金流；分红每 10 股口径、预告区间与快报实际值、大宗折溢价字段都要按原单位读，不擅自换算。
+
+市场数据同理：项目已有 A/H/美股行情与 K 线，并非全球所有指数、外汇、债券、商品实时行情；只有在实际检索到并核对的来源上才能比较。全球指数/黄金/美元指数可作为跨资产反应参考，但不是完整行情库。WeStock 如需扩展，先 `westock_capabilities` 发现；本机 WeStock CLI 是 Linux 二进制、Windows 环境不可执行，失败时如实标注并改用可用 HTTP 源，不伪造成功。
 
 跨境传导可用 `global_to_china_impact`：输入只含已核验的事件事实及来源，输出是机制脚手架，不是自动核实新闻或全球抓数器。按「海外事实 → 利率/汇率/需求/成本/风险偏好 → 中国行业 → 公司业务/盈利 → 估值」逐环验证；区分事实、条件推断、未验证叙事，不从海外事件直接跳到买卖。
 
 ## 6. 政策、白皮书和政策书导入
 
-1. 先 `policy_sources` 查看来源；`policy_search` 查已有记录。`policy_collect` / `policy_import(url)` 的远程 URL 抓取受实际 allowlist、robots、大小/超时和重定向校验约束。官方来源并不自动等于 allowlist 已允许。
-2. **未允许的国际来源不能伪称可直接入政策库**，不通过另一个 URL/代理绕过。合法可用的公开网页可经 `web_search` / `web_fetch` 阅读，将允许引用的原文摘录和链接用 `save_research(kind:'policy'/'other')` 保存到资料库；资料库记录不等于政策库政策 id 或原文快照。
+1. 先 `policy_sources` 查看来源；`policy_search` 查已有记录。`policy_collect` / `policy_import(url)` 的远程 URL 抓取受实际 allowlist、robots、大小/超时和重定向校验约束。官方来源并不自动等于 allowlist 已允许。当前允许清单已加入 10 个国际官方来源（Fed/ECB/BLS/BEA/IMF/World Bank/OECD/Eurostat/BIS/US Treasury），但默认 `enabled:false / kind:manual`：只表示可用 `policy_import(url)` 手工导入具体页面，**不表示已核实其 feed 或列表可自动采集**。
+2. **允许清单内的国际来源也不保证页面可静态抓取**：脚本渲染、403、robots 或结构变化都可能失败。合法可用的公开网页可经 `web_search` / `web_fetch` 阅读，将允许引用的原文摘录和链接用 `save_research(kind:'policy'/'other')` 保存到资料库；资料库记录不等于政策库政策 id 或原文快照。
 3. 用户合法取得/获授权提供的本地 `.pdf/.html/.md/.txt` 或粘贴正文，可以分别 `policy_import(filePath)` / `policy_import(text, title, issuer, docType, publishedAt, documentNumber)`。这不是让 Agent 自动抓取被拒 URL，也不是修改 allowlist；不替用户绕过访问控制。外部材料保持来源待核验，不因入库的 `sourceClass` 就称官方核验。
 4. 白皮书用实际 `docType:'white-paper'`；政策书按实际内容选 `industry-plan` / `regulation` / `other` 等，不把研究报告变成有法律约束力的政策。说明发布机关、文号、效力、发布日期/生效日；缺失则留缺，不猜。
 5. PDF 导入仅存快照，走第 3、7 节解析闸门。可提交合法提取的纯文本补充；**不能保证新正文会自动替换或合并原 PDF 条目**。核对返回 id/version/parseStatus，再明确关联原 PDF/提取正文，不能宣称已自动修复。
