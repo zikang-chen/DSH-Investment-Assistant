@@ -42,7 +42,88 @@ export const RECOMMENDATION_VIEW: Record<Recommendation, { label: string; tone: 
 }
 export const HORIZON_LABEL: Record<string, string> = { intraday: '日内', days: '数日', weeks: '数周', months: '数月', years: '长期' }
 export const MARKET_LABEL: Record<string, string> = { cn: 'A 股', hk: '港股', us: '美股', fund: '基金', bond: '债券', gold: '黄金', crypto: '数字资产', macro: '宏观', other: '其他' }
-export const EVIDENCE_LABEL: Record<string, string> = { policy: '政策', macro: '宏观', fundamental: '基本面', valuation: '估值', market: '行情', portfolio: '组合', calculation: '计算', news: '资讯', research: '资料', 'evidence-request': '证据请求' }
+export const EVIDENCE_LABEL: Record<string, string> = {
+  policy: '政策', macro: '宏观', fundamental: '基本面', valuation: '估值', market: '行情',
+  portfolio: '组合', calculation: '计算', news: '资讯', research: '资料', 'evidence-request': '证据请求',
+  // Legacy / agent-supplied kinds are mapped to readable Chinese instead of leaking raw English.
+  technical: '技术面', rate: '利率', rates: '利率', currency: '汇率', fx: '汇率',
+  regime: '宏观环境', positioning: '仓位/资金', sentiment: '情绪', flow: '资金流',
+  earnings: '盈利', financials: '财务', liquidity: '流动性', regulation: '政策',
+}
+
+const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : [])
+const asText = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback)
+
+/** Never let one incomplete record blank the whole 研究记录 page. Missing lists become empty. */
+export function normalizeAdviceRow(row: unknown): AdviceRow {
+  const r = (row ?? {}) as Record<string, unknown>
+  return {
+    adviceId: asText(r.adviceId),
+    userPrompt: asText(r.userPrompt),
+    assets: asArray<string>(r.assets),
+    market: asText(r.market, 'other'),
+    horizon: asText(r.horizon, 'months'),
+    recommendation: (asText(r.recommendation, 'WATCH') as AdviceRow['recommendation']),
+    label: typeof r.label === 'string' ? r.label : undefined,
+    dataFreshness: typeof r.dataFreshness === 'string' ? r.dataFreshness : 'unknown',
+    supports: typeof r.supports === 'number' ? r.supports : 0,
+    contradicts: typeof r.contradicts === 'number' ? r.contradicts : 0,
+    status: asText(r.status, 'open'),
+    reviews: typeof r.reviews === 'number' ? r.reviews : 0,
+    createdAt: asText(r.createdAt),
+    nextReviewAt: asText(r.nextReviewAt),
+  }
+}
+
+/** Fill arrays/objects so the detail view can render legacy or partial records safely. */
+export function normalizeAdviceDetail(raw: unknown): InvestmentAdvice {
+  const a = (raw ?? {}) as Record<string, unknown>
+  const fresh = (a.dataFreshness ?? {}) as Record<string, unknown>
+  const action = a.proposedAction && typeof a.proposedAction === 'object' ? (a.proposedAction as Record<string, unknown>) : null
+  return {
+    ...(raw as InvestmentAdvice),
+    adviceId: asText(a.adviceId),
+    userPrompt: asText(a.userPrompt),
+    createdAt: asText(a.createdAt),
+    assets: asArray<string>(a.assets),
+    market: asText(a.market, 'other') as InvestmentAdvice['market'],
+    horizon: asText(a.horizon, 'months') as InvestmentAdvice['horizon'],
+    investmentGoal: asText(a.investmentGoal),
+    recommendation: asText(a.recommendation, 'WATCH') as InvestmentAdvice['recommendation'],
+    recommendationConditions: asArray<string>(a.recommendationConditions),
+    rationale: asArray<string>(a.rationale),
+    supporting: asArray<InvestmentAdvice['supporting'][number]>(a.supporting),
+    contradicting: asArray<InvestmentAdvice['contradicting'][number]>(a.contradicting),
+    invalidationConditions: asArray<string>(a.invalidationConditions),
+    marketSnapshot: asArray<InvestmentAdvice['marketSnapshot'][number]>(a.marketSnapshot),
+    dataFreshness: {
+      status: (asText(fresh.status, 'unknown') as InvestmentAdvice['dataFreshness']['status']),
+      asOf: asText(fresh.asOf),
+      note: asText(fresh.note),
+    },
+    valuationSummary: asText(a.valuationSummary),
+    portfolioContextUsed: a.portfolioContextUsed === true,
+    riskConstraints: asArray<string>(a.riskConstraints),
+    scenarioAssumptions: asArray<string>(a.scenarioAssumptions),
+    proposedAction: action
+      ? {
+        summary: asText(action.summary),
+        conditions: asArray<string>(action.conditions),
+        ...(action.priceZone ? { priceZone: action.priceZone as NonNullable<InvestmentAdvice['proposedAction']>['priceZone'] } : {}),
+        ...(action.sizingNote ? { sizingNote: String(action.sizingNote) } : {}),
+        simulated: action.simulated !== false,
+      }
+      : null,
+    nextReviewAt: asText(a.nextReviewAt),
+    unresolvedQuestions: asArray<string>(a.unresolvedQuestions),
+    calculationRefs: asArray<string>(a.calculationRefs),
+    modelVersion: asText(a.modelVersion, 'unknown'),
+    promptVersion: asText(a.promptVersion, 'unknown'),
+    status: a.status === 'reviewed' ? 'reviewed' : 'open',
+    reviews: asArray<InvestmentAdvice['reviews'][number]>(a.reviews),
+    promptHash: asText(a.promptHash),
+  }
+}
 export const FRESHNESS_LABEL: Record<string, string> = { fresh: '时效：新鲜', stale: '时效：已过期', unknown: '时效：待核实' }
 
 export function deliveryFeedback(outcome: DeliveryOutcome): string {

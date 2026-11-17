@@ -69,6 +69,9 @@ jobs:
       - name: CN free datasets bridge and UI
         run: npm run test:cn-datasets && npm run test:cn-datasets-ui
 
+      - name: Investment research records robustness
+        run: npm run test:advice-view
+
       # 离线、确定性的套件；依赖外部数据源或 POSIX 文件权限的套件不在此跑。
       - name: Policy
         run: npm run test:policy

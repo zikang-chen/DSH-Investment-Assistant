@@ -10,6 +10,7 @@ import path from 'node:path'
 import type { Logger } from '../log.js'
 import {
   advicePromptHash,
+  normalizeEvidenceKind,
   validateAdvice,
   type AdviceInput,
   type AdviceReview,
@@ -24,6 +25,67 @@ function nowIso(): string {
 
 function shortId(): string {
   return `adv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+}
+
+const strArray = (value: unknown): string[] => (Array.isArray(value) ? value.map((v) => String(v)) : [])
+const str = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback)
+/** Normalise legacy/free-form evidence kinds in place (in memory) so lists and detail agree. */
+const evidenceArray = <T extends { kind?: unknown }>(value: unknown): T[] =>
+  Array.isArray(value) ? value.map((item) => ({ ...(item as T), kind: normalizeEvidenceKind((item as T)?.kind) })) : []
+
+/**
+ * Tolerate older / hand-edited records: fill missing arrays and objects so a single
+ * incomplete record cannot make the whole list or detail view fail. Values are not
+ * invented — missing lists become empty, missing freshness becomes "unknown".
+ */
+function normalizeStoredAdvice(raw: unknown): InvestmentAdvice {
+  const a = (raw ?? {}) as Record<string, unknown>
+  const fresh = (a.dataFreshness ?? {}) as Record<string, unknown>
+  const action = a.proposedAction && typeof a.proposedAction === 'object'
+    ? (a.proposedAction as Record<string, unknown>)
+    : null
+  return {
+    ...(a as unknown as InvestmentAdvice),
+    adviceId: str(a.adviceId),
+    userPrompt: str(a.userPrompt),
+    createdAt: str(a.createdAt),
+    assets: strArray(a.assets),
+    market: (str(a.market, 'other') as InvestmentAdvice['market']),
+    horizon: (str(a.horizon, 'months') as InvestmentAdvice['horizon']),
+    investmentGoal: str(a.investmentGoal),
+    recommendationConditions: strArray(a.recommendationConditions),
+    rationale: strArray(a.rationale),
+    supporting: evidenceArray<InvestmentAdvice['supporting'][number]>(a.supporting),
+    contradicting: evidenceArray<InvestmentAdvice['contradicting'][number]>(a.contradicting),
+    invalidationConditions: strArray(a.invalidationConditions),
+    marketSnapshot: Array.isArray(a.marketSnapshot) ? (a.marketSnapshot as InvestmentAdvice['marketSnapshot']) : [],
+    dataFreshness: {
+      status: str(fresh.status, 'unknown') as InvestmentAdvice['dataFreshness']['status'],
+      asOf: str(fresh.asOf),
+      note: str(fresh.note),
+    },
+    valuationSummary: str(a.valuationSummary),
+    portfolioContextUsed: a.portfolioContextUsed === true,
+    riskConstraints: strArray(a.riskConstraints),
+    scenarioAssumptions: strArray(a.scenarioAssumptions),
+    proposedAction: action
+      ? {
+        summary: str(action.summary),
+        conditions: strArray(action.conditions),
+        ...(action.priceZone ? { priceZone: action.priceZone as NonNullable<InvestmentAdvice['proposedAction']>['priceZone'] } : {}),
+        ...(action.sizingNote ? { sizingNote: String(action.sizingNote) } : {}),
+        simulated: action.simulated !== false,
+      }
+      : null,
+    nextReviewAt: str(a.nextReviewAt),
+    unresolvedQuestions: strArray(a.unresolvedQuestions),
+    calculationRefs: strArray(a.calculationRefs),
+    modelVersion: str(a.modelVersion, 'unknown'),
+    promptVersion: str(a.promptVersion, 'unknown'),
+    status: a.status === 'reviewed' ? 'reviewed' : 'open',
+    reviews: Array.isArray(a.reviews) ? (a.reviews as InvestmentAdvice['reviews']) : [],
+    promptHash: str(a.promptHash),
+  }
 }
 
 export interface CreateResult {
@@ -47,7 +109,8 @@ export class AdviceStore {
   async load(): Promise<void> {
     try {
       const parsed = JSON.parse(await readFile(this.file, 'utf8')) as AdvicesFile
-      this.advices = Array.isArray(parsed.advices) ? parsed.advices : []
+      const raw = Array.isArray(parsed.advices) ? parsed.advices : []
+      this.advices = raw.map((item) => normalizeStoredAdvice(item))
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log?.warn('advice store unreadable', { error: String(err) })
       this.advices = []
@@ -71,7 +134,7 @@ export class AdviceStore {
     const limit = Math.max(1, Math.min(200, filter.limit ?? 50))
     return this.all().filter((a) => {
       if (filter.status && a.status !== filter.status) return false
-      if (filter.asset && !a.assets.some((x) => x.toUpperCase().includes(filter.asset!.toUpperCase()))) return false
+      if (filter.asset && !(a.assets ?? []).some((x) => String(x).toUpperCase().includes(filter.asset!.toUpperCase()))) return false
       if (filter.market && a.market !== filter.market) return false
       return true
     }).slice(0, limit)
@@ -196,15 +259,15 @@ export function adviceBrief(advice: InvestmentAdvice) {
   return {
     adviceId: advice.adviceId,
     userPrompt: advice.userPrompt,
-    assets: advice.assets,
+    assets: Array.isArray(advice.assets) ? advice.assets : [],
     market: advice.market,
     horizon: advice.horizon,
     recommendation: advice.recommendation,
-    dataFreshness: advice.dataFreshness.status,
-    supports: advice.supporting.length,
-    contradicts: advice.contradicting.length,
+    dataFreshness: advice.dataFreshness?.status ?? 'unknown',
+    supports: Array.isArray(advice.supporting) ? advice.supporting.length : 0,
+    contradicts: Array.isArray(advice.contradicting) ? advice.contradicting.length : 0,
     status: advice.status,
-    reviews: advice.reviews.length,
+    reviews: Array.isArray(advice.reviews) ? advice.reviews.length : 0,
     createdAt: advice.createdAt,
     nextReviewAt: advice.nextReviewAt,
   }

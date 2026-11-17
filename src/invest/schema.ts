@@ -154,12 +154,36 @@ export function isDay(value: unknown): boolean {
   return DAY_RE.test(String(value ?? '').trim())
 }
 
+/** Map free-form evidence kinds onto the schema enum so a typo never leaks English into the UI. */
+export const EVIDENCE_KIND_ALIASES: Record<string, EvidenceKind> = {
+  policy: 'policy', regulation: 'policy', government: 'policy',
+  macro: 'macro', rate: 'macro', rates: 'macro', currency: 'macro', fx: 'macro', inflation: 'macro', employment: 'macro', growth: 'macro',
+  fundamental: 'fundamental', earnings: 'fundamental', financial: 'fundamental', financials: 'fundamental',
+  valuation: 'valuation', multiple: 'valuation', pe: 'valuation',
+  market: 'market', technical: 'market', price: 'market', momentum: 'market', positioning: 'market', sentiment: 'market', flow: 'market', funds: 'market',
+  portfolio: 'portfolio', position: 'portfolio', holding: 'portfolio',
+  calculation: 'calculation', calc: 'calculation', model: 'calculation',
+  news: 'news', media: 'news',
+  research: 'research', report: 'research', note: 'research',
+  'evidence-request': 'evidence-request', evidence: 'research',
+  regime: 'macro', liquidity: 'macro',
+}
+
+export function normalizeEvidenceKind(raw: unknown): EvidenceKind {
+  const key = String(raw ?? '').trim().toLowerCase()
+  if (!key) return 'research'
+  const alias = EVIDENCE_KIND_ALIASES[key]
+  if (alias) return alias
+  // Accept a known enum value even if the alias table missed it.
+  return (EVIDENCE_KINDS as readonly string[]).includes(key) ? (key as EvidenceKind) : 'research'
+}
+
 export function normalizeEvidence(raw: unknown): AdviceEvidence[] {
   if (!Array.isArray(raw)) return []
   return raw.map((item) => {
     const value = (item ?? {}) as Record<string, unknown>
     return {
-      kind: String(value.kind ?? 'research') as EvidenceKind,
+      kind: normalizeEvidenceKind(value.kind),
       claim: String(value.claim ?? '').trim(),
       source: String(value.source ?? '').trim(),
       asOf: String(value.asOf ?? '').trim(),

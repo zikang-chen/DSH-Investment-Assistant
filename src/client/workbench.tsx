@@ -3,7 +3,7 @@ import type { AdviceEvidence, InvestmentAdvice } from '../invest/schema.js'
 import { Button, PageHeader, StatusBadge, EmptyState, MetricCard, formatNumber, formatMoney } from './design-system/index.js'
 import {
   deliveryFeedback, displayDay, EVIDENCE_LABEL, FRESHNESS_LABEL, HORIZON_LABEL, isSafeSourceUrl,
-  MARKET_LABEL, RECOMMENDATION_VIEW, researchPrompt,
+  MARKET_LABEL, RECOMMENDATION_VIEW, researchPrompt, normalizeAdviceDetail, normalizeAdviceRow,
   type AdviceDetail, type AdviceList, type AdviceRow, type Deliver, type ReadApi, type UsePanelBus,
 } from './workbench-model.js'
 
@@ -186,8 +186,8 @@ export function InvestmentWorkbench(props: WorkbenchProps & { onOpenPolicy: (id:
     catch (err) { setFeedback(`未能投递：${message(err)}`) }
     finally { setSending(false) }
   }
-  const advice = detail.data?.advice
-  const rows = (list.data?.advices ?? []).filter(row => filter === 'all' || row.status === filter)
+  const advice = detail.data?.advice ? normalizeAdviceDetail(detail.data.advice) : undefined
+  const rows = (list.data?.advices ?? []).map(normalizeAdviceRow).filter(row => filter === 'all' || row.status === filter)
   const rec = advice ? RECOMMENDATION_VIEW[advice.recommendation] : undefined
   const examples = ['现在沪深300适不适合配置？', '近期中国政策如何影响新能源行业？', '美联储高利率会怎样影响港股？']
   return <div className="fia-page fia-investment" data-testid="finance-advice">
