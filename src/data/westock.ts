@@ -192,16 +192,27 @@ async function detectBin(): Promise<string> {
     if (await exists(p)) return p
     throw new Error(`westock 可执行文件不存在：${p}（检查 westock.binPath 配置）`)
   }
-  const candidates = [
+  // Windows ships `westock.exe`; also cover `.dsh-home/bin` and PATHEXT resolution.
+  const home = os.homedir()
+  const bases = [
     process.env.WESTOCK_BIN,
     process.env.WESTOCK_HOME ? path.join(process.env.WESTOCK_HOME, 'bin', 'westock') : undefined,
-    path.join(os.homedir(), '.westock', 'bin', 'westock'),
-    path.join(os.homedir(), '.local', 'bin', 'westock'),
+    path.join(home, '.westock', 'bin', 'westock'),
+    path.join(home, '.dsh-home', 'bin', 'westock'),
+    path.join(home, '.local', 'bin', 'westock'),
   ].filter((v): v is string => !!v)
+  const candidates: string[] = []
+  for (const base of bases) {
+    candidates.push(base)
+    if (process.platform === 'win32') {
+      candidates.push(`${base}.exe`)
+      candidates.push(`${base}.cmd`)
+    }
+  }
   for (const c of candidates) {
     if (await exists(c)) return c
   }
-  return 'westock' // last resort: rely on PATH resolution inside execFile
+  return process.platform === 'win32' ? 'westock.exe' : 'westock' // last resort: PATH resolution
 }
 
 function childEnv(): NodeJS.ProcessEnv {

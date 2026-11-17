@@ -25,7 +25,7 @@
 | `get_notice_list` | 优先东财 `announcements`，再回退 WeStock `notice_list` |
 | VIX | 东财只有 VIX 相关 ETF（如 107.VIXY），**没有指数本身**；不伪造 |
 | 巴西 IBOV | 无可用 secid，明确失败 |
-| 仍仅 WeStock（本机不可执行→会失败并如实标注） | 一致预期、股东研究、龙虎榜、北向持仓、筹码分布、股票评分、机构评级、ESG、研报、ETF 概览/持仓 |
+| 仅 WeStock 提供（本机 `westock.exe` 可用；失败时如实标注） | 一致预期、股东研究、龙虎榜、北向持仓、筹码分布、股票评分、机构评级、ESG、研报、ETF 概览/持仓 |
 
 后续可继续补的接口方向（尚未实现，需逐个线上核实）：东财 datacenter 的龙虎榜/股东/一致预期报表、ETF 折溢价页面接口。
 
@@ -87,7 +87,7 @@
 | 融资融券 | A股 | 东财 `RPTA_WEB_RZRQ_GGMX` | 余额与净买入；单位亿元/元以源为准 |
 | 事件/风险/股东 | A股 | WeStock 能力（本机 CLI 不可执行时失败） | 失败只影响该 section，不补数据 |
 
-说明：WeStock CLI 在本机是 Linux 二进制，当前 Windows/WSL 环境不可执行；因此新增的 A 股资金流/公司事件/港美财务都走可用的 HTTP 官方/东财接口，并在失败时明确标注，而不是假装 WeStock 成功。
+说明：WeStock CLI 在本机可用（`~/.westock/bin/westock.exe`，`westock --version` = 0.0.5，实测 `quote/consensus/shareholder/fund flow` 均返回真实数据）。此前曾因可执行文件探测未包含 Windows `.exe` 与 `.dsh-home/bin` 而被误判为“不可执行”，现已修正探测逻辑。A 股资金流仍优先使用东财逐日明细（按日粒度更细），WeStock 作为回退。
 
 美股 SEC 访问要求可联系的 User-Agent：设置环境变量 `DSH_SEC_EDGAR_UA="dsh-finance/0.1.0 (your-contact@example.com)"` 后重启宿主（或按实际部署注入）。未配置时 `get_global_financials` 会明确失败，不会匿名硬闯或伪造数据。
 

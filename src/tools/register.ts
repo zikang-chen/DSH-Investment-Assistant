@@ -11,6 +11,7 @@ import { buildFundDossier } from '../data/fund-dossier.js'
 import { GLOBAL_MACRO_SERIES_KEYS } from '../data/global-macro.js'
 import { fetchAndBuildGlobalNewsRadar } from '../news/global-radar.js'
 import { fetchGlobalQuote, fetchGlobalKline } from '../data/global-quotes.js'
+import { listCnDatasets, fetchCnDataset, checkCnBridge } from '../data/cn-datasets.js'
 import { dossierToolResult } from './dossier-data.js'
 import {
   compareFunds,
@@ -739,6 +740,43 @@ export function registerTools(ctx: Context, finance: FinanceDataService, store: 
         return { secid: item.secid, label: item.label, ok: res.ok, price: res.quote?.price ?? null, changePct: res.quote?.changePct ?? null, change: res.quote?.change ?? null, asOf: res.quote?.asOf, error: res.ok ? undefined : res.error }
       }))
       return asJson({ ok: true, at: new Date().toISOString(), source: 'eastmoney-push2', rows: results })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'list_cn_datasets',
+    description: '列出中国免费数据集注册表（AKShare 桥）：dataset id、来源、单位、频率、是否可用、不可用原因、必填参数。做中国宏观/财务/基金/债券研究前先查这里，避免调用不存在的接口。',
+    parameters: {},
+    output: jsonOut,
+    async execute() {
+      try {
+        const datasets = await listCnDatasets()
+        const health = await checkCnBridge()
+        return asJson({ ok: true, bridge: health, datasets })
+      } catch (err) {
+        return asJson({ ok: false, error: err instanceof Error ? err.message : String(err), datasets: [] })
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'get_cn_dataset',
+    description: '获取一个中国免费数据集（AKShare）。dataset 用 list_cn_datasets 返回的 id；params 按该数据集必填参数传。返回 rows/unit/as_of(最新统计期)/fetched_at/source/source_url/warnings；缺失为 null 不补 0，不可用数据集明确报错。研究用途，数据不得再分发。',
+    parameters: {
+      dataset: { type: 'string', required: true, description: '数据集 id，如 CN_MACRO_CPI / CN_A_SHARE_DAILY / CN_FUND_NAV' },
+      params: { type: 'string', description: '可选 JSON 字符串，如 {"symbol":"600519","start_date":"2026-11-01","end_date":"2026-11-17"}' },
+      limit: { type: 'number', description: '最多返回最近多少行（从最新期截取）' },
+    },
+    output: jsonOut,
+    async execute(args) {
+      let params: Record<string, string | number> | undefined
+      if (typeof args.params === 'string' && args.params.trim()) {
+        try { params = JSON.parse(args.params) as Record<string, string | number> } catch { return asJson({ ok: false, error: 'params 不是合法 JSON' }) }
+      } else if (args.params && typeof args.params === 'object') {
+        params = args.params as Record<string, string | number>
+      }
+      const limit = args.limit === undefined ? undefined : Number(args.limit)
+      return asJson(await fetchCnDataset(String(args.dataset ?? ''), { params, ...(limit ? { limit } : {}) }))
     },
   }))
 

@@ -66,6 +66,9 @@ jobs:
       - name: Global stock/commodity quotes and K-line
         run: npm run test:global-quotes
 
+      - name: CN free datasets bridge and UI
+        run: npm run test:cn-datasets && npm run test:cn-datasets-ui
+
       # 离线、确定性的套件；依赖外部数据源或 POSIX 文件权限的套件不在此跑。
       - name: Policy
         run: npm run test:policy

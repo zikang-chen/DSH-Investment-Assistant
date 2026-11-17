@@ -115,4 +115,10 @@ test('weStock-first tools fall back to Eastmoney when the CLI is unavailable', (
   assert.match(westock, /callCap\(finance, 'announcements', payload, exec\.signal\)/)
   assert.match(westock, /return callCap\(finance, 'notice_list', payload, exec\.signal\)/)
 })
+test('WeStock binary detection covers Windows .exe and .dsh-home installs', () => {
+  const westock = readFileSync(new URL('../src/data/westock.ts', import.meta.url), 'utf8')
+  assert.match(westock, /\.dsh-home/)
+  assert.match(westock, /\.exe/)
+  assert.match(westock, /process\.platform === 'win32'/)
+})
 console.log(`[global-quotes] ${passed} pure/static groups passed; no live network used in this test.`)

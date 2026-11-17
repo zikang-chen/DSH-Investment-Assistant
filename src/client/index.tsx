@@ -3,6 +3,7 @@ import { FinanceTheme, ThemeControls, formatNumber, formatPercent } from './desi
 import { OverviewWorkbench, InvestmentWorkbench } from './workbench.js'
 import { WORKSPACE_CSS } from './workspace-styles.js'
 import { FundWorkspace } from './fund-workspace.js'
+import { CnDatasetsPanel } from './cn-datasets-panel.js'
 import { KlineChart } from './kline-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
 import { CapitalWorkspace, WealthWorkspace } from './capital-workspace.js'
@@ -1563,6 +1564,7 @@ function MacroView(props: { active: boolean }) {
                     h(Sparkline, { data: pts.slice(-24), color: dir, w: 74 })))
             }))),
     h(GlobalMacroSection, null),
+    h(CnDatasetsPanel, { get: apiGet, active: props.active }),
     h('div', { style: { ...S.muted, fontSize: 11, padding: '0 2px' } }, '数据源：东财 datacenter（对照 AkShare macro_china_*）· 百分比为与 12 期前对比'))
 }
 

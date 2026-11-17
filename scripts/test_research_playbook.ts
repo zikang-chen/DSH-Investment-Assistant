@@ -128,7 +128,7 @@ test('A 股市场范围、资金分类、全球行情和报价时效不扩大', 
   const stock = section(playbook, '## 3.')
   includesAll(stock, ['A 股/沪深范围', '不能称「全球市场全景」', '资金分类不是投资者意图', 'probe_finance_sources', '截至时间'])
   includesAll(section(playbook, '## 5.'), ['并非全球所有指数'])
-  includesAll(section(playbook, '## 5.'), ['不是自动核实新闻或全球抓数器', 'westock_capabilities', '本机 WeStock CLI 是 Linux 二进制', '资金流是算法统计'])
+  includesAll(section(playbook, '## 5.'), ['不是自动核实新闻或全球抓数器', 'westock_capabilities', 'westock.exe', '资金流是算法统计'])
 })
 
 test('国际 allowlist 拒绝后有合法资料库/授权本地材料通路', () => {

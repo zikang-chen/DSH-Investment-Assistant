@@ -11,6 +11,7 @@ import { buildStockDossier, dossierSummary } from './data/dossier.js'
 import { buildFundDossier } from './data/fund-dossier.js'
 import { normalizeGlobalRegion } from './data/global-indices.js'
 import { fetchGlobalQuote, fetchGlobalKline } from './data/global-quotes.js'
+import { listCnDatasets, fetchCnDataset, checkCnBridge } from './data/cn-datasets.js'
 import { buildLookthrough } from './lookthrough.js'
 import type { ReminderOptions, ReminderScanResult, ReminderStore } from './reminders.js'
 import type { PanelBus } from './panel-bus.js'
@@ -1085,6 +1086,27 @@ export function registerRoutes(
           }
           const report = await finance.getGlobalIndices(region)
           return sendJson(res, 200, report)
+        }
+        // 中国免费数据集（AKShare 桥）：列表 + 健康状态，以及按数据集取数。
+        if (req.method === 'GET' && sub === '/cn-datasets') {
+          try {
+            const datasets = await listCnDatasets()
+            const health = await checkCnBridge()
+            return sendJson(res, 200, { ok: true, bridge: health, datasets })
+          } catch (err) {
+            return sendJson(res, 200, { ok: false, error: err instanceof Error ? err.message : String(err), datasets: [] })
+          }
+        }
+        if (req.method === 'GET' && sub === '/cn-dataset') {
+          const dataset = url.searchParams.get('dataset') ?? ''
+          let params: Record<string, string | number> | undefined
+          const rawParams = url.searchParams.get('params')
+          if (rawParams) {
+            try { params = JSON.parse(rawParams) as Record<string, string | number> } catch { return sendJson(res, 400, { ok: false, error: 'params 不是合法 JSON' }) }
+          }
+          const limit = Number(url.searchParams.get('limit') ?? '0') || undefined
+          const result = await fetchCnDataset(dataset, { params, ...(limit ? { limit } : {}) })
+          return sendJson(res, result.ok ? 200 : 400, result)
         }
         // 海外个股/指数行情与K线：仅按真实 secid 请求，不按代码位数猜市场。
         if (req.method === 'GET' && sub === '/global/quote') {

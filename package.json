@@ -57,6 +57,8 @@
     "test:dossier-global": "tsx scripts/test_dossier_global_sections.ts",
     "test:global-indices": "tsx scripts/test_global_indices.ts",
     "test:global-quotes": "tsx scripts/test_global_quotes.ts",
+    "test:cn-datasets": "tsx scripts/test_cn_datasets.ts",
+    "test:cn-datasets-ui": "tsx scripts/test_cn_datasets_ui.ts",
     "test:regressions": "tsx scripts/test_regressions.ts",
     "test:wealth": "tsx scripts/test_wealth.ts",
     "test:investment": "tsx scripts/test_investment.ts",
