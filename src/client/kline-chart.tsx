@@ -8,8 +8,8 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent a
 import { getFinanceTokens, useFinanceTheme, type MarketMode } from './design-system/index.js'
 import { financeChartPalette } from './chart-theme.js'
 import {
-  MA_WINDOWS, aggregateBars, clampViewport, formatPrice, formatVolume, indexAtX, movingAverages,
-  panViewport, pctChange, priceRange, sanitizeBars, visibleRange, volumeRange, zoomViewport,
+  MA_WINDOWS, aggregateBars, clampViewport, defaultViewport, formatPrice, formatVolume, indexAtX, markerBarIndex,
+  movingAverages, panViewport, pctChange, priceRange, sanitizeBars, visibleRange, volumeRange, zoomViewport,
   type AggBar, type KlinePeriod, type MaWindow, type RawBar, type Viewport,
 } from './kline-math.js'
 
@@ -29,7 +29,8 @@ export interface KlineChartProps {
 }
 
 const PAD_LEFT = 6
-const PAD_RIGHT = 54
+/** Wide enough for 5-digit index levels (e.g. 24,509.76) without clipping the labels. */
+const PAD_RIGHT = 68
 const PAD_TOP = 16
 const VOL_HEIGHT = 46
 const PANE_GAP = 8
@@ -61,6 +62,16 @@ export function KlineChart(props: KlineChartProps) {
   const agg = useMemo(() => aggregateBars(bars, period), [bars, period])
   const mas = useMemo(() => movingAverages(agg), [agg])
   const total = agg.length
+  // Reset to the latest bars when the dataset or period changes (not on every refresh
+  // that keeps the same range), so switching symbol/周期 never leaves a stale empty window.
+  const dataSig = `${agg.length}|${agg[0]?.date ?? ''}|${agg[agg.length - 1]?.date ?? ''}|${period}`
+  const sigRef = useRef(dataSig)
+  useEffect(() => {
+    if (sigRef.current === dataSig) return
+    sigRef.current = dataSig
+    setViewport(defaultViewport(agg.length))
+    setCross(null)
+  }, [dataSig, agg.length])
   const vp = useMemo(() => clampViewport(total, { count: Math.min(viewport.count, total || 1), offset: viewport.offset }), [total, viewport])
   const range = useMemo(() => visibleRange(total, vp), [total, vp])
   const pal = useMemo(() => financeChartPalette(resolved, marketMode), [resolved, marketMode])
@@ -69,7 +80,7 @@ export function KlineChart(props: KlineChartProps) {
   useLayoutEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const measure = () => setWidth(Math.max(220, el.clientWidth))
+    const measure = () => setWidth(Math.max(140, el.clientWidth))
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
@@ -117,8 +128,8 @@ export function KlineChart(props: KlineChartProps) {
       ctx.lineTo(width - PAD_RIGHT, yy)
       ctx.stroke()
       ctx.fillStyle = pal.text
-      ctx.textAlign = 'left'
-      ctx.fillText(formatPrice(v), width - PAD_RIGHT + 6, yy + 3)
+      ctx.textAlign = 'right'
+      ctx.fillText(formatPrice(v), width - 6, yy + 3)
     }
     // 成交量基线
     ctx.strokeStyle = pal.grid
@@ -129,7 +140,7 @@ export function KlineChart(props: KlineChartProps) {
 
     // 事件标记：竖虚线 + 顶部圆点（保留 K 线页事件联动）
     markers.forEach((m, mi) => {
-      const idx = agg.findIndex((b) => b.date >= m.date)
+      const idx = markerBarIndex(agg, m.date)
       if (idx < range.start || idx >= range.end || idx < 0) return
       const xi = Math.round(xAt(idx - range.start)) + 0.5
       ctx.strokeStyle = markerColors[mi % markerColors.length]!
@@ -321,12 +332,12 @@ export function KlineChart(props: KlineChartProps) {
       case '-': case '_': e.preventDefault(); zoomAt(1 / 1.25); break
       case 'Home': e.preventDefault(); setViewport((v) => clampViewport(total, { count: v.count, offset: Math.max(0, total - v.count) })); break
       case 'End': e.preventDefault(); setViewport((v) => clampViewport(total, { count: v.count, offset: 0 })); break
-      case 'r': case 'R': e.preventDefault(); setViewport({ count: Math.min(80, total), offset: 0 }); setCross(null); break
+      case 'r': case 'R': e.preventDefault(); setViewport(defaultViewport(total)); setCross(null); break
       default: break
     }
   }
 
-  const reset = () => { setViewport({ count: Math.min(80, total), offset: 0 }); setCross(null) }
+  const reset = () => { setViewport(defaultViewport(total)); setCross(null) }
 
   // ---- 渲染（DOM 层）----
   const seg = (active: boolean): CSSProperties => ({
@@ -349,9 +360,9 @@ export function KlineChart(props: KlineChartProps) {
 
   const hoverBar: AggBar | null = cross ? agg[Math.max(range.start, Math.min(range.end - 1, cross.index))] ?? null : null
   const hoverPrev = hoverBar ? agg[agg.indexOf(hoverBar) - 1] : undefined
-  const tooltipLeft = cross ? Math.min(Math.max(8, cross.x + 14), width - 190) : 0
+  const tooltipLeft = cross ? Math.max(8, Math.min(cross.x + 14, Math.max(8, width - 200))) : 0
 
-  return h('div', { ref: containerRef, style: { display: 'flex', flexDirection: 'column', gap: 6, width: '100%' } },
+  return h('div', { ref: containerRef, style: { display: 'flex', flexDirection: 'column', gap: 6, width: '100%', minWidth: 0, overflow: 'hidden' } },
     // 工具条
     h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
       ...(['day', 'week', 'month'] as KlinePeriod[]).map((p) =>

@@ -246,6 +246,28 @@ export function volumeRange(bars: RawBar[]): { min: number; max: number } {
 }
 
 /**
+ * Index of the aggregated bar that CONTAINS `date`. Daily bars match their own date;
+ * weekly/monthly bars match [bar.date, periodEnd] so a mid-week event lands on that
+ * week's bar instead of the following one. Returns -1 when the date is outside data.
+ */
+export function markerBarIndex(agg: AggBar[], date: string): number {
+  if (!DATE_RE.test(date) || !agg.length) return -1
+  for (let i = 0; i < agg.length; i++) {
+    const bar = agg[i]!
+    const end = bar.periodEnd || bar.date
+    if (date >= bar.date && date <= end) return i
+  }
+  // Date before first bar or between gaps: attach to the first bar at/after it.
+  const next = agg.findIndex((b) => b.date >= date)
+  return next
+}
+
+/** Default viewport = latest N bars. */
+export function defaultViewport(total: number, preferred = 80): Viewport {
+  return { count: Math.max(1, Math.min(preferred, Math.max(total, 1))), offset: 0 }
+}
+
+/**
  * 配色：红涨绿跌（默认）或蓝橙（Okabe-Ito，色觉友好）。
  * 两种模式下涨蜡烛都是空心、跌蜡烛都是实心——涨跌不只靠颜色区分。
  */
