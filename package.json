@@ -61,6 +61,8 @@
     "test:cn-datasets-ui": "tsx scripts/test_cn_datasets_ui.ts",
     "test:advice-view": "tsx scripts/test_advice_view.ts",
     "test:kline-math": "tsx scripts/test_kline_math.ts",
+    "test:history-sync": "tsx scripts/test_history_sync.ts",
+    "test:policy-official": "tsx scripts/test_policy_official.ts",
     "test:regressions": "tsx scripts/test_regressions.ts",
     "test:wealth": "tsx scripts/test_wealth.ts",
     "test:investment": "tsx scripts/test_investment.ts",

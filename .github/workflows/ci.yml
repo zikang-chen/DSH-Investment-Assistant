@@ -75,6 +75,9 @@ jobs:
       - name: K-line math (markers, aggregation, viewport)
         run: npm run test:kline-math
 
+      - name: History sync paging and policy official collection
+        run: npm run test:history-sync && npm run test:policy-official
+
       # 离线、确定性的套件；依赖外部数据源或 POSIX 文件权限的套件不在此跑。
       - name: Policy
         run: npm run test:policy

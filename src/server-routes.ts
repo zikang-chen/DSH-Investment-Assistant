@@ -995,7 +995,8 @@ export function registerRoutes(
           const body = await readBody(req)
           const code = validateCode(body.code)
           const kind = validateMarketKind(body.kind ?? 'a') as SymbolKind
-          const result = await syncHistory(finance, history, code, kind)
+          const since = typeof body.since === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.since) ? body.since : undefined
+          const result = await syncHistory(finance, history, code, kind, undefined, { ...(since ? { since } : {}) })
           bus.publish({ kind: 'history', code, bars: result.bars, addedBars: result.addedBars })
           return sendJson(res, 200, result)
         }

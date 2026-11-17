@@ -3,6 +3,7 @@ import { FinanceTheme, ThemeControls, formatNumber, formatPercent } from './desi
 import { OverviewWorkbench, InvestmentWorkbench } from './workbench.js'
 import { WORKSPACE_CSS } from './workspace-styles.js'
 import { FundWorkspace } from './fund-workspace.js'
+import { officialCollectPrompt, isCollectableUrl } from './policy-collect-model.js'
 import { CnDatasetsPanel } from './cn-datasets-panel.js'
 import { KlineChart } from './kline-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
@@ -1893,6 +1894,20 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const picks = [...props.data.holdings, ...props.data.watchlist].slice(0, 8)
+  const autoSynced = useRef(new Set<string>())
+  /** Throttle: at most one auto/incremental sync per symbol every 10 minutes. */
+  const lastSyncAt = useRef(new Map<string, number>())
+  const todayStr = () => new Date().toISOString().slice(0, 10)
+  const shiftDate = (day: string, delta: number) => new Date(new Date(`${day}T00:00:00Z`).getTime() + delta * 86_400_000).toISOString().slice(0, 10)
+  /** Keep the chart on the latest trading day: incremental sync when local data lags today. */
+  const refreshIfStale = async (c: string, k: string, newest: string) => {
+    if (!newest || newest >= todayStr()) return
+    const sig = `${k}:${c}`
+    const now = Date.now()
+    if (now - (lastSyncAt.current.get(sig) ?? 0) < 10 * 60_000) return
+    lastSyncAt.current.set(sig, now)
+    await sync(c, k, true, shiftDate(newest, -5))
+  }
   const load = async (c: string, k: string) => {
     if (!c) return
     const seq = ++requestSeq.current
@@ -1901,13 +1916,28 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
     try {
       const r = await apiGet<{ ok: boolean; kline?: HistBar[]; events?: HistEvent[]; updatedAt?: string }>(`/history?code=${encodeURIComponent(c)}&kind=${encodeURIComponent(k)}`)
       if (requestSeq.current !== seq) return
-      setHist(r.ok ? { kline: r.kline ?? [], events: r.events ?? [], updatedAt: r.updatedAt } : { kline: [], events: [] })
+      const bars = r.ok ? r.kline ?? [] : []
+      setHist({ kline: bars, events: r.events ?? [], updatedAt: r.updatedAt })
       setLoaded({ code: c, kind: k })
+      // 本地无该标的历史时自动补一次（每个代码只自动重试一次，避免反复打上游）。
+      const sig = `${k}:${c}`
+      if (r.ok && bars.length === 0 && !autoSynced.current.has(sig)) {
+        autoSynced.current.add(sig)
+        setHint('本地暂无该标的K线，正在自动同步…')
+        void sync(c, k, true)
+      } else if (r.ok && bars.length > 0) {
+        const newest = String(bars[bars.length - 1]!.date).slice(0, 10)
+        // 有本地数据但落后于今天：增量拉最新（节流 10 分钟），保证总是最新交易日。
+        void refreshIfStale(c, k, newest)
+      }
     } catch (err) {
       if (requestSeq.current !== seq) return
       const message = errText(err)
-      if (/no local history/i.test(message)) setHist({ kline: [], events: [] })
-      else { setHistError(message); setHist(null) }
+      if (/no local history/i.test(message)) {
+        setHist({ kline: [], events: [] })
+        const sig = `${k}:${c}`
+        if (!autoSynced.current.has(sig)) { autoSynced.current.add(sig); setHint('本地暂无该标的K线，正在自动同步…'); void sync(c, k, true) }
+      } else { setHistError(message); setHist(null) }
       setLoaded({ code: c, kind: k })
     }
     try {
@@ -1915,15 +1945,25 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
       if (requestSeq.current === seq) setManifest(m.ok && m.manifest ? m.manifest : null)
     } catch { if (requestSeq.current === seq) setManifest(null) }
   }
-  const sync = async () => {
-    const c = code.trim(); if (!c) { setHint('请输入代码'); return }
-    setBusy(true); setHint('')
+  const sync = async (cArg?: string, kArg?: string, silent = false, since?: string) => {
+    const c = (cArg ?? code).trim(); const k = kArg ?? kind
+    if (!c) { setHint('请输入代码'); return }
+    setBusy(true); if (!silent) setHint('')
     try {
-      const r = await apiPost<{ ok: boolean; bars: number; addedBars: number; addedEvents: number; provider?: string; klineError?: string; pages?: number; truncatedAt?: string | null }>('/history/sync', { code: c, kind })
-      setHint(r.ok ? `同步完成：${r.bars} 根K线（新增 ${r.addedBars}），事件 +${r.addedEvents}｜${r.provider ?? ''}${r.truncatedAt ? `｜仅同步最近 ${r.pages ?? '?'} 页（至 ${r.truncatedAt}，更早待后续补齐）` : ''}` : `同步失败：${r.klineError ?? ''}`)
-      await load(c, kind)
-    } catch { setHint('同步失败') } finally { setBusy(false) }
+      const r = await apiPost<{ ok: boolean; bars: number; addedBars: number; addedEvents: number; provider?: string; klineError?: string; pages?: number; truncatedAt?: string | null }>('/history/sync', { code: c, kind: k, ...(since ? { since } : {}) })
+      if (!silent) setHint(r.ok ? `同步完成：${r.bars} 根K线（新增 ${r.addedBars}），事件 +${r.addedEvents}｜${r.provider ?? ''}${r.truncatedAt ? `｜仅同步最近 ${r.pages ?? '?'} 页（至 ${r.truncatedAt}，更早待后续补齐）` : ''}` : `同步失败：${r.klineError ?? ''}`)
+      await load(c, k)
+    } catch { if (!silent) setHint('同步失败') } finally { setBusy(false) }
   }
+  // 停留在 K线页时每 90 秒检查最新交易日，落后就增量拉取（节流在 refreshIfStale 内）。
+  useEffect(() => {
+    if (!loaded) return
+    const timer = setInterval(() => {
+      const newest = hist?.kline?.length ? String(hist.kline[hist.kline.length - 1]!.date).slice(0, 10) : ''
+      void refreshIfStale(loaded.code, loaded.kind, newest)
+    }, 90_000)
+    return () => clearInterval(timer)
+  }, [loaded, hist])
   useEffect(() => { if (code) void load(code, kind) }, [])
   // panel_navigate command: focus this view on a code (at-timestamp re-triggers repeats).
   useEffect(() => {
@@ -1939,6 +1979,9 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
     if (e.kind === '__resync') { const c = code.trim(); if (c) void load(c, kind); return }
     if (e.kind === 'history' && (e as BusMsg & { code?: string }).code === code.trim()) void load(code.trim(), kind)
   })
+  const lastBarDate = hist?.kline?.length ? String(hist.kline[hist.kline.length - 1]!.date).slice(0, 10) : ''
+  const staleDays = lastBarDate ? Math.floor((Date.now() - new Date(`${lastBarDate}T00:00:00Z`).getTime()) / 86_400_000) : 0
+  const isStale = Boolean(lastBarDate) && Number.isFinite(staleDays) && staleDays > 10
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
     h('div', { style: S.group },
       h('div', { style: S.groupHead },
@@ -1962,6 +2005,11 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
             h('option', { value: 'a' }, 'A股'), h('option', { value: 'hk' }, '港股'), h('option', { value: 'us' }, '美股'), h('option', { value: 'fund' }, '基金')),
           h('button', { style: S.btnPrimary, disabled: busy, onClick: () => void sync() }, busy ? '同步中…' : '同步'),
           h('button', { style: S.btn, onClick: () => void load(code.trim(), kind) }, '查看')),
+        isStale ? h('div', { role: 'status', style: { ...S.muted, fontSize: 11, color: WARNING, lineHeight: 1.6 } },
+          `本地数据截至 ${lastBarDate}（约 ${staleDays} 天前），可能已过期；点「同步」拉取最新，缩到最左可看最早历史。`) : null,
+        hist && hist.kline.length ? h('div', { style: { ...S.muted, fontSize: 11 } },
+          `本地 ${hist.kline.length} 根 · ${String(hist.kline[0]!.date).slice(0, 10)} → ${lastBarDate}${lastBarDate === new Date().toISOString().slice(0, 10) ? ' · 已是最新交易日' : ''}`,
+          ' · 停留本页会自动增量更新') : null,
         picks.length ? h('div', { style: { display: 'flex', gap: 5, flexWrap: 'wrap' } }, picks.map((p) => h('button', {
           key: keyOf(p.code, p.type ?? 'stock'),
           style: {
@@ -3570,6 +3618,10 @@ function PolicyView(props: { deliver: (text: string) => void; focus?: string }) 
   const [selected, setSelected] = useState('')
   const [detail, setDetail] = useState<PolicyDetailPayload | null>(null)
   const [hint, setHint] = useState('')
+  const [collectUrl, setCollectUrl] = useState('')
+  const [collectFrom, setCollectFrom] = useState('')
+  const [collectTo, setCollectTo] = useState('')
+  const [collectPages, setCollectPages] = useState('3')
 
   // 从投资判断跳过来时按 id 聚焦（focus 由外层传入，仅用于首次定位）。
   useEffect(() => {
@@ -3641,6 +3693,40 @@ function PolicyView(props: { deliver: (text: string) => void; focus?: string }) 
         [['', '全部状态'], ['announced', '已发布'], ['draft', '征求意见'], ['in-force', '已生效'], ['superseded', '已替代'], ['repealed', '已废止']]
           .map(([id, label]) => h('option', { key: id, value: id }, label))),
       h('button', { style: S.btn, onClick: reload, disabled: loading }, loading ? '刷新中…' : '刷新'))
+
+    , h('div', { style: S.card },
+        h('div', { style: { fontWeight: 600, marginBottom: 4 } }, '采集官方页面 / 历史回溯'),
+        h('div', { style: { ...S.muted, fontSize: 11, marginBottom: 6, lineHeight: 1.6 } },
+          '支持部委列表页「下一页」翻页与 PDF/XLS/XLSX/CSV 附件下载（白皮书、人民银行统计数据表等），可限定日期区间回溯过往文件。遵守 robots.txt 与允许清单；需登录/验证码的站点请改用「导入原文」。'),
+        h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+          h('input', {
+            style: { ...S.input, flex: '2 1 220px', minWidth: 160 },
+            placeholder: '官方列表页或正文页 URL（如 pbc.gov.cn 统计数据栏目）',
+            value: collectUrl,
+            onChange: (e: { target: { value: string } }) => setCollectUrl(e.target.value),
+          }),
+          h('input', {
+            style: { ...S.input, flex: '1 1 110px', maxWidth: 140 },
+            placeholder: '起始日期 YYYY-MM-DD',
+            value: collectFrom,
+            onChange: (e: { target: { value: string } }) => setCollectFrom(e.target.value),
+          }),
+          h('input', {
+            style: { ...S.input, flex: '0 1 72px', maxWidth: 80 },
+            placeholder: '页数',
+            value: collectPages,
+            onChange: (e: { target: { value: string } }) => setCollectPages(e.target.value),
+          }),
+          h('button', {
+            style: S.btnPrimary,
+            disabled: !isCollectableUrl(collectUrl),
+            onClick: () => props.deliver(officialCollectPrompt({ url: collectUrl, from: collectFrom.trim() || undefined, pages: Number(collectPages) || 1 })),
+          }, '采集 / 回溯'),
+          h('button', {
+            style: S.btn,
+            onClick: () => props.deliver('请用 policy_collect 采集所有已启用官方来源的最新政策，列出新增/更新/重复/失败，并把新增项归档到「资料」页。'),
+          }, '检查最新更新')),
+        hint ? h('div', { style: { ...S.muted, fontSize: 11, color: BRAND, marginTop: 4 } }, hint) : null)
 
     , stats ? h('div', { style: { ...S.muted, display: 'flex', gap: 10, flexWrap: 'wrap' } },
         h('span', null, `政策库 ${stats.total} 篇`),

@@ -13,6 +13,7 @@ import type { Logger } from '../log.js'
 import type { PolicyStore } from './store.js'
 import type { CollectDeps } from './collect.js'
 import { collectOne, collectSource, collectUrls, importFile, importText } from './collect.js'
+import { collectOfficialPages } from './official-collect.js'
 import { mirrorPolicyToVault } from './vault-bridge.js'
 import { diffParagraphs, hasNumericChange, type ParagraphChange } from './diff.js'
 import { buildImpactPlan } from './impact.js'
@@ -237,6 +238,44 @@ export function registerPolicyTools(ctx: Context, deps: PolicyToolDeps): void {
         const mirrored = await mirror(docs)
         if (merged.added + merged.updated > 0) notify('collect')
         return asJson({ ok: merged.failed === 0, runAt: merged.runAt, added: merged.added, updated: merged.updated, duplicate: merged.duplicate, failed: merged.failed, ...mirrored, sources: merged.sources })
+      } catch (err) {
+        return asJson({ ok: false, error: err instanceof Error ? err.message : String(err) })
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'policy_collect_official',
+    description: '程序化采集官方页面/历史归档：从允许清单内的页面出发沿「下一页」翻页，入库正文，并下载 PDF/XLS/XLSX/CSV/DOC 附件（白皮书、人民银行统计数据表等）。支持 from/to 日期区间回溯过往文件。遵守 robots.txt，不绕过登录/验证码。',
+    parameters: {
+      url: { type: 'string', required: true, description: '列表页或正文页 URL（必须在允许清单主机内）' },
+      maxPages: { type: 'number', description: '最多翻多少页（含首页），默认 1，上限 30' },
+      maxDocs: { type: 'number', description: '最多入库多少篇正文，默认 20，上限 50' },
+      from: { type: 'string', description: '只看该日期之后的文档 YYYY-MM-DD（支持历史回溯）' },
+      to: { type: 'string', description: '只看该日期之前的文档 YYYY-MM-DD' },
+      includeAttachments: { type: 'boolean', description: '是否下载 PDF/XLS/CSV 等附件，默认 true' },
+      maxAttachments: { type: 'number', description: '最多下载多少个附件，默认 20，上限 30' },
+      issuer: { type: 'string', description: '发布机关（写入文档元数据）' },
+      docType: { type: 'string', enum: [...POLICY_DOC_TYPES], description: '文档类型，默认 other' },
+    },
+    output: jsonOut,
+    async execute(args) {
+      try {
+        const result = await collectOfficialPages(collectDeps(), {
+          url: String(args.url ?? ''),
+          ...(Number(args.maxPages) > 0 ? { maxPages: Number(args.maxPages) } : {}),
+          ...(Number(args.maxDocs) > 0 ? { maxDocs: Number(args.maxDocs) } : {}),
+          ...(args.from ? { from: isoDay(args.from) } : {}),
+          ...(args.to ? { to: isoDay(args.to) } : {}),
+          includeAttachments: args.includeAttachments !== false,
+          ...(Number(args.maxAttachments) > 0 ? { maxAttachments: Number(args.maxAttachments) } : {}),
+          ...(args.issuer ? { issuer: String(args.issuer) } : {}),
+          ...(args.docType ? { docType: normDocType(args.docType) } : {}),
+        })
+        const docs = result.documents.map((d) => (d.id ? deps.store.get(d.id) : undefined)).filter((d): d is PolicyDocument => !!d)
+        const mirrored = await mirror(docs)
+        if (docs.length) notify('collect', docs[0])
+        return asJson({ ...result, ...mirrored })
       } catch (err) {
         return asJson({ ok: false, error: err instanceof Error ? err.message : String(err) })
       }

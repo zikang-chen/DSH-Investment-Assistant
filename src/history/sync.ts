@@ -48,6 +48,11 @@ function prevDay(date: string): string {
 /** 分页拉取上限：单页满 PAGE_CAP 才继续向前翻页，最多 MAX_HISTORY_PAGES 页。 */
 const MAX_HISTORY_PAGES = 5
 const PAGE_CAP = 800
+/**
+ * 每页请求的自然日窗口。必须显著大于 60 天：东财等源按 `days` 回溯，
+ * 旧实现直接沿用默认 60 天 → 永远拿不到 800 根，翻页从不发生（只有约 3 个月数据）。
+ */
+const PAGE_DAYS = 4000
 
 interface KlinePage {
   ok: boolean
@@ -63,6 +68,7 @@ interface KlinePage {
 export async function fetchKlinePaged(
   kind: SymbolKind,
   fetchPage: (end: string | undefined) => Promise<KlinePage>,
+  maxPages = MAX_HISTORY_PAGES,
 ): Promise<{ bars: KlineBar[]; provider?: string; pages: number; error?: string; truncatedAt?: string }> {
   const pages: KlineBar[][] = []
   let provider: string | undefined
@@ -70,7 +76,7 @@ export async function fetchKlinePaged(
   let error: string | undefined
   let end: string | undefined
   let truncatedAt: string | undefined
-  for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
+  for (let page = 0; page < Math.max(1, Math.min(MAX_HISTORY_PAGES, maxPages)); page++) {
     const r = await fetchPage(end)
     if (!r.ok || !Array.isArray(r.data) || r.data.length === 0) {
       if (page === 0) error = r.error
@@ -105,6 +111,13 @@ export async function fetchKlinePaged(
   }
 }
 
+export interface SyncOptions {
+  /** Incremental: fetch only bars from this date (YYYY-MM-DD) — avoids re-pulling full history. */
+  since?: string
+  /** Cap pages for this run (default MAX_HISTORY_PAGES). */
+  maxPages?: number
+}
+
 /**
  * Fetch daily K-line (by market kind) and, for equities, financial report dates,
  * then append/update them into the local history store.
@@ -115,6 +128,7 @@ export async function syncHistory(
   code: string,
   kind: SymbolKind,
   signal?: AbortSignal,
+  options: SyncOptions = {},
 ) {
   const resolvedKind = inferSymbolKind(code, kind)
   let bars: KlineBar[] = []
@@ -128,11 +142,19 @@ export async function syncHistory(
     klineProvider = klineRes.provider
     klineError = klineRes.ok ? undefined : klineRes.error
   } else {
-    const fetchPage = (end: string | undefined): Promise<KlinePage> =>
-      resolvedKind === 'hk' ? finance.getHkKline(code, 'daily', undefined, end, signal)
-        : resolvedKind === 'us' ? finance.getUsKline(code, 'daily', undefined, end, signal)
-          : finance.getKline(code, 'daily', undefined, end, signal) as Promise<KlinePage>
-    const paged = await fetchKlinePaged(resolvedKind, fetchPage)
+    const fetchPage = (end: string | undefined): Promise<KlinePage> => {
+      if (options.since) {
+        // 增量更新：只从「本地最后一根前 5 天」往后取，避免每次刷新都拉全部历史。
+        return resolvedKind === 'hk' ? finance.getHkKline(code, 'daily', options.since, end, signal, PAGE_DAYS)
+          : resolvedKind === 'us' ? finance.getUsKline(code, 'daily', options.since, end, signal, PAGE_DAYS)
+            : finance.getKline(code, 'daily', options.since, end, signal, PAGE_DAYS) as Promise<KlinePage>
+      }
+      return resolvedKind === 'hk' ? finance.getHkKline(code, 'daily', undefined, end, signal, PAGE_DAYS)
+        : resolvedKind === 'us' ? finance.getUsKline(code, 'daily', undefined, end, signal, PAGE_DAYS)
+          // A 股：显式从 1990 年起取，才能覆盖到上市首日（此前用 days=60 只落 3 个月）
+          : finance.getKline(code, 'daily', '1990-01-01', end, signal, PAGE_DAYS) as Promise<KlinePage>
+    }
+    const paged = await fetchKlinePaged(resolvedKind, fetchPage, options.maxPages ?? (options.since ? 1 : undefined))
     bars = paged.bars
     klineProvider = paged.provider
     pages = paged.pages
