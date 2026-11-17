@@ -1,7 +1,7 @@
 /** K-line math regression tests: marker alignment, viewport reset, aggregation, ranges. */
 import assert from 'node:assert/strict'
 import {
-  aggregateBars, defaultViewport, markerBarIndex, priceRange, sanitizeBars, visibleRange, clampViewport,
+  aggregateBars, defaultViewport, fitAllViewport, markerBarIndex, priceRange, sanitizeBars, visibleRange, clampViewport, zoomViewport,
 } from '../src/client/kline-math.js'
 
 let passed = 0
@@ -87,4 +87,29 @@ test('priceRange includes moving averages and pads constant series', () => {
   const withMa = priceRange(bars, [[null, 12]])
   assert.ok(withMa.max >= 12, '均线值必须纳入价格轴范围')
 })
+test('zoom-out eventually fits ALL history from the earliest bar', () => {
+  const total = 500
+  let vp = defaultViewport(total) // 80
+  // 连续缩小应能到达全览，并且 offset 归零（能看到最早一根）
+  for (let i = 0; i < 40 && vp.count < total; i++) vp = zoomViewport(vp, 1 / 1.18, total)
+  assert.equal(vp.count, total)
+  assert.equal(vp.offset, 0)
+  assert.deepEqual(visibleRange(total, vp), { start: 0, end: total })
+})
+
+test('zoom-out ignores stale pan offset instead of leaving the earliest bars hidden', () => {
+  const total = 200
+  // 用户先平移到较早区间（offset 大），再一路缩小
+  let vp: { count: number; offset: number } = { count: 60, offset: 140 }
+  for (let i = 0; i < 40; i++) vp = zoomViewport(vp, 1 / 1.18, total)
+  assert.equal(vp.count, total)
+  assert.equal(vp.offset, 0, '缩到全览时必须回到 offset=0，否则看不到最早/最新一段')
+  assert.deepEqual(visibleRange(total, vp), { start: 0, end: total })
+})
+
+test('fitAllViewport shows every bar and is safe for empty data', () => {
+  assert.deepEqual(fitAllViewport(300), { count: 300, offset: 0 })
+  assert.deepEqual(fitAllViewport(0), { count: 1, offset: 0 })
+})
+
 console.log(`[kline-math] ${passed} groups passed (offline).`)

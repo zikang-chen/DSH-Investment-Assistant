@@ -8,7 +8,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent a
 import { getFinanceTokens, useFinanceTheme, type MarketMode } from './design-system/index.js'
 import { financeChartPalette } from './chart-theme.js'
 import {
-  MA_WINDOWS, aggregateBars, clampViewport, defaultViewport, formatPrice, formatVolume, indexAtX, markerBarIndex,
+  MA_WINDOWS, aggregateBars, clampViewport, defaultViewport, fitAllViewport, formatPrice, formatVolume, indexAtX, markerBarIndex,
   movingAverages, panViewport, pctChange, priceRange, sanitizeBars, visibleRange, volumeRange, zoomViewport,
   type AggBar, type KlinePeriod, type MaWindow, type RawBar, type Viewport,
 } from './kline-math.js'
@@ -302,7 +302,10 @@ export function KlineChart(props: KlineChartProps) {
       const dist = Math.abs(a!.x - b!.x) + Math.abs(a!.y - b!.y)
       if (pinchRef.current.dist > 8) {
         const factor = dist / pinchRef.current.dist
-        setViewport((v) => clampViewport(total, { count: Math.round(pinchRef.current!.count / factor), offset: v.offset }))
+        setViewport((v) => {
+          const count = Math.round(pinchRef.current!.count / factor)
+          return count >= Math.max(total, 1) ? fitAllViewport(total) : clampViewport(total, { count, offset: v.offset })
+        })
       }
       return
     }
@@ -333,6 +336,7 @@ export function KlineChart(props: KlineChartProps) {
       case 'Home': e.preventDefault(); setViewport((v) => clampViewport(total, { count: v.count, offset: Math.max(0, total - v.count) })); break
       case 'End': e.preventDefault(); setViewport((v) => clampViewport(total, { count: v.count, offset: 0 })); break
       case 'r': case 'R': e.preventDefault(); setViewport(defaultViewport(total)); setCross(null); break
+      case 'a': case 'A': e.preventDefault(); setViewport(fitAllViewport(total)); setCross(null); break
       default: break
     }
   }
@@ -383,10 +387,14 @@ export function KlineChart(props: KlineChartProps) {
       }, '→'),
       h('button', { style: toolBtn, onClick: reset, title: '重置视图', 'aria-label': '重置视图' }, '重置'),
       h('button', {
+        style: toolBtn, onClick: () => { setViewport(fitAllViewport(total)); setCross(null) },
+        title: '全览：缩到最早一根（全部历史）', 'aria-label': '全览全部历史',
+      }, '全部'),
+      h('button', {
         style: seg(colorBlind), onClick: () => setMarketMode(colorBlind ? previousMarketMode.current : 'accessible'),
         title: '切换全局色觉友好模式；涨空心/跌实心不依赖颜色', 'aria-pressed': colorBlind,
       }, '色盲友好')),
-    h('div', { style: { fontSize: 10, color: paint.muted } }, '操作：滚轮/双指缩放 · 拖动平移 · 双击复位 · ←→平移 · +− 缩放 · Home/End 首末根 · R 复位'),
+    h('div', { style: { fontSize: 10, color: paint.muted } }, '操作：滚轮/双指缩放（可缩到最早一根）· 拖动平移 · 双击复位 · ←→平移 · +− 缩放 · A 全部 · Home/End 首末根 · R 复位'),
     // 图例（均线数值随十字光标或最新一根）
     h('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', fontSize: 10.5, color: paint.secondary } },
       ...MA_WINDOWS.map((w) => {
@@ -409,7 +417,7 @@ export function KlineChart(props: KlineChartProps) {
         ref: canvasRef,
         tabIndex: 0,
         role: 'application',
-        'aria-label': `${title}。方向键平移，加减号缩放，Home/End 跳到最早/最新，R 重置。`,
+        'aria-label': `${title}。方向键平移，加减号缩放，A 全览全部历史，Home/End 跳到最早/最新，R 重置。`,
         style: {
           width: '100%', height: '100%', display: 'block', cursor: 'crosshair', touchAction: 'none',
           borderRadius: 8, outline: focused ? `2px solid ${paint.focus}` : 'none',

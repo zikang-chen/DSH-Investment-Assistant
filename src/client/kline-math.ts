@@ -190,10 +190,17 @@ export function clampViewport(total: number, vp: Viewport): Viewport {
   return { count, offset }
 }
 
-/** zoom factor >1 放大（根数变少）；以锚点（可见区下标）为缩放中心。 */
+/** zoom factor >1 放大（根数变少）；缩小到覆盖全部数据时自动把视窗对齐到最早一根。 */
 export function zoomViewport(vp: Viewport, factor: number, total: number): Viewport {
   const count = Math.round(vp.count / factor)
+  // 缩到头 = 看全部历史（offset 归零），否则曾平移过的视窗永远看不到最早一段。
+  if (count >= Math.max(total, 1)) return fitAllViewport(total)
   return clampViewport(total, { count, offset: vp.offset })
+}
+
+/** 全览：从数据第一根到最新一根（最早入市至今）。 */
+export function fitAllViewport(total: number): Viewport {
+  return { count: Math.max(1, total), offset: 0 }
 }
 
 export function panViewport(vp: Viewport, deltaBars: number, total: number): Viewport {
