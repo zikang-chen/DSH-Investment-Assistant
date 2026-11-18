@@ -35,6 +35,10 @@ data/experiments/
 data/ui-shots/
 data/logs/
 data/follow.json
+# 个人成长/家庭规划与组合策略版本（含私人资产数据，只存本机）
+data/growth.json
+data/family-plan.json
+data/portfolio-strategy/
 
 # Python bridge runtime artifacts
 __pycache__/
