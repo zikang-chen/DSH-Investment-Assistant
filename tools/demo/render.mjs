@@ -29,15 +29,19 @@ const bundle = await build({
   },
 })
 const js = bundle.outputFiles[0].text
-const html = (theme) => `<!doctype html><html lang="zh-CN" data-theme="${theme}"><head><meta charset="utf-8">
+const html = (theme, tab) => `<!doctype html><html lang="zh-CN" data-theme="${theme}"><head><meta charset="utf-8">
 <title>投资助手 · 示例数据</title><style>
 html,body{margin:0;background:${theme === 'dark' ? '#0d1117' : '#f5f6f8'}}
-#banner{position:fixed;right:12px;bottom:10px;font:11px/1.6 system-ui;color:#8a8f99;letter-spacing:.02em}
-</style></head><body><div id="root"></div><div id="banner">示例数据 · 非实机持仓</div>
+</style></head><body><div id="root"></div>
 <script>${js}</script></body></html>`
 
-writeFileSync(path.join(TMP, 'light.html'), html('light'))
-writeFileSync(path.join(TMP, 'dark.html'), html('dark'))
+// 每页一个文件；?nav=off 隐藏演示切换条，#tab 指定初始页。
+for (const theme of ['light', 'dark']) {
+  for (const tab of ['home', 'advice', 'strategy']) {
+    writeFileSync(path.join(TMP, `${tab}-${theme}.html`),
+      html(theme, tab).replace('<div id="root"></div>', `<div id="root"></div><script>location.hash='${tab}'</script>`))
+  }
+}
 
 /** Minimal CDP client over Node's built-in WebSocket (no puppeteer). */
 class CDP {
@@ -92,20 +96,29 @@ const shot = async (cdp, { width, height, scale, file, scrollY = 0, clickTab, fi
   console.log('wrote', path.join('docs/images', file))
 }
 
-await withPage(async cdp => {
-  await cdp.send('Page.navigate', { url: 'file:///' + path.join(TMP, 'light.html').replaceAll('\\', '/') })
-  await new Promise(r => setTimeout(r, 900))
-  // 面板在宿主里是 520px 侧栏；另有展开态。按真实宽度截，避免把窄栏布局拉成宽屏。
-  await shot(cdp, { width: 520, height: 900, scale: 2, file: 'overview-light.png' })
-  // 组合页：填入示例权重，避免截图全是空输入框（仍是示例数据）。
-  await shot(cdp, { width: 520, height: 980, scale: 2, file: 'portfolio-light.png', clickTab: '组合策略',
-    fill: [[0, '510300'], [2, '60'], [3, '60'], [5, '511010'], [7, '30'], [8, '30'], [10, '10'], [11, '5'], [12, '70'], [13, '90']] })
-  await shot(cdp, { width: 960, height: 1000, scale: 2, file: 'overview-wide.png' })
+const open = async (cdp, file) => {
+  const target = 'file:///' + path.join(TMP, file).replaceAll('\\', '/') + '?nav=off'
+  await cdp.send('Page.navigate', { url: target })
+  await new Promise(r => setTimeout(r, 1200))
+}
 
-  await cdp.send('Page.navigate', { url: 'file:///' + path.join(TMP, 'dark.html').replaceAll('\\', '/') })
-  await new Promise(r => setTimeout(r, 900))
+await withPage(async cdp => {
+  // 面板在宿主里是 520px 侧栏；另有展开态。按真实宽度截，避免把窄栏布局拉成宽屏。
+  await open(cdp, 'home-light.html')
+  await shot(cdp, { width: 520, height: 900, scale: 2, file: 'overview-light.png' })
+
+  await open(cdp, 'advice-light.html')
+  await shot(cdp, { width: 520, height: 1180, scale: 2, file: 'advice-light.png' })
+
+  await open(cdp, 'strategy-light.html')
+  // 填入示例权重，避免截图全是空输入框（仍是示例数据）。
+  await shot(cdp, { width: 520, height: 980, scale: 2, file: 'portfolio-light.png',
+    fill: [[0, '510300'], [2, '60'], [3, '60'], [5, '511010'], [7, '30'], [8, '30'], [10, '10'], [11, '5'], [12, '70'], [13, '90']] })
+
+  await open(cdp, 'home-dark.html')
   await shot(cdp, { width: 520, height: 900, scale: 2, file: 'overview-dark.png' })
   await shot(cdp, { width: 390, height: 844, scale: 2, file: 'overview-mobile.png' })
+  await shot(cdp, { width: 960, height: 1000, scale: 2, file: 'overview-wide.png' })
 })
 
 try { rmSync(path.join(TMP, 'profile'), { recursive: true, force: true, maxRetries: 3, retryDelay: 300 }) }

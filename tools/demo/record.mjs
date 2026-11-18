@@ -53,8 +53,8 @@ await cdp.send('Page.enable'); await cdp.send('Runtime.enable')
 await cdp.send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false })
 // 无头 Chrome 默认偏好深色；演示 GIF 固定浅色，避免首帧变深色。
 await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
-await cdp.send('Page.navigate', { url: 'file:///' + path.join(TMP, 'reel.html').replaceAll('\\', '/') })
-await new Promise(r => setTimeout(r, 1200))
+await cdp.send('Page.navigate', { url: 'file:///' + path.join(TMP, 'reel.html').replaceAll('\\', '/') + '?nav=off' })
+await new Promise(r => setTimeout(r, 1400))
 
 const frames = []
 const grab = async () => {
@@ -64,23 +64,21 @@ const grab = async () => {
   frames.push(png)
 }
 const run = async (expression, wait = 320) => { await cdp.send('Runtime.evaluate', { expression }); await new Promise(r => setTimeout(r, wait)) }
-const clickTab = (label) => run(`(()=>{const b=[...document.querySelectorAll('nav button')].find(x=>x.textContent==='${label}');b&&b.click();return !!b})()`)
-const scrollTo = (y) => run(`window.scrollTo({top:${y},behavior:'smooth'});1`, 420)
+const goto = (tab) => run(`location.hash='${tab}';1`, 500)
+const scrollTo = (y) => run(`window.scrollTo({top:${y},behavior:'smooth'});1`, 480)
 const fill = () => run(`(()=>{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set
   const i=[...document.querySelectorAll('input')]
   for(const [n,v] of [[0,'510300'],[2,'60'],[3,'60'],[5,'511010'],[7,'30'],[8,'30'],[10,'10'],[11,'5'],[12,'70'],[13,'90']]){if(i[n]){s.call(i[n],v);i[n].dispatchEvent(new Event('input',{bubbles:true}))}}
   return i.length})()`, 320)
 
-// 1) 总览，向下滚两屏
+// 总览 → 投资判断 → 组合策略（都只含示例数据）
 await grab()
 await scrollTo(520); await grab(); await grab()
-await scrollTo(1000); await grab(); await grab()
-// 2) 回顶部，切到组合策略
-await scrollTo(0)
-await clickTab('组合策略'); await grab(); await grab()
-await fill(); await grab(); await grab(); await grab()
-await scrollTo(560); await grab(); await grab()
-await scrollTo(980); await grab()
+await goto('advice'); await grab(); await grab()
+await scrollTo(520); await grab()
+await goto('strategy'); await scrollTo(0); await grab()
+await fill(); await grab(); await grab()
+await scrollTo(620); await grab()
 
 ws.close(); proc.kill()
 

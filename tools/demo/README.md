@@ -17,8 +17,9 @@ npm run docs:images
 
 | 文件 | 用途 |
 | --- | --- |
-| `docs/images/demo.gif` | README 首屏演示：总览 → 组合策略 → 填入示例权重 |
+| `docs/images/demo.gif` | README 首屏演示：总览 → 投资判断 → 组合策略 |
 | `docs/images/overview-light.png` | 总览，面板默认 520px 宽 |
+| `docs/images/advice-light.png` | 投资判断详情（证据／反证／失效条件） |
 | `docs/images/overview-dark.png` | 深色主题 |
 | `docs/images/overview-wide.png` | 展开态 960px |
 | `docs/images/overview-mobile.png` | 390px 窄屏 |
