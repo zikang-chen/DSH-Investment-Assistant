@@ -81,7 +81,7 @@ export function OverviewWorkbench(props: WorkbenchProps & { onOpenPolicy: (id: s
   const accountCount = capital.data?.accounts?.length
   const warnings = capital.data?.warnings ?? []
   const capitalText = capital.error ? '读取失败' : accountCount === undefined ? '读取中' : accountCount === 0 ? '尚未添加账户' : `${accountCount} 个账户`
-  const resourceStatus = (resource: ReadState<unknown>, empty: string, value?: number) => resource.error ? '暂不可用' : !resource.data ? '读取中' : value ? `${formatNumber(value)} 项` : empty
+  const resourceStatus = (resource: ReadState<unknown>, empty: string, value?: number) => resource.error ? '暂不可用' : !resource.data ? '读取中' : value ? `${formatNumber(value, { decimals: 0 })} 项` : empty
   return <div className="fia-page fia-workbench" data-testid="finance-overview" aria-busy={loading}>
     <PageHeader title="今日投资工作台" eyebrow="RESEARCH WORKSPACE" description="从最新变化到可检验的判断。所有数据都保留来源与时点。" actions={<Button onClick={reload} disabled={loading}>{loading ? '读取中…' : '刷新数据'}</Button>} />
     <div className="fia-meta-line">{fetchedAt ? `本机读取于 ${fetchedAt} · 不代表报价时间` : '正在读取本地研究数据'}<span>研究与模拟 · 不执行交易</span></div>

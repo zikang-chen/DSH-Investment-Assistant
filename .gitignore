@@ -44,3 +44,7 @@ data/portfolio-strategy/
 __pycache__/
 *.pyc
 aktools_log.log
+
+# 文档截图流水线的临时产物
+tools/demo/.deps/
+tools/demo/.out/

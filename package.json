@@ -70,7 +70,8 @@
     "test:wealth": "tsx scripts/test_wealth.ts",
     "test:investment": "tsx scripts/test_investment.ts",
     "test:learn": "tsx scripts/test_learn.ts",
-    "demo:seed": "tsx scripts/seed_demo.ts"
+    "demo:seed": "tsx scripts/seed_demo.ts",
+    "docs:images": "node tools/demo/render.mjs && node tools/demo/record.mjs"
   },
   "dsh": {
     "bundle": {
