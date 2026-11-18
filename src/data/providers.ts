@@ -381,7 +381,7 @@ async function emMainFinadata(args: Record<string, unknown>, ctx: ProviderContex
 
 // ---- T4 东财 F10 七维（仅 A 股）----
 // 规范化/口径在 eastmoney-f10.ts（纯函数、fixture 固定契约）；这里只做抓取。
-// 上游契约在本环境无法线上核实（TLS 被中断），结果带 contractVerified=false。
+// PageAjax code=SH601988 已于2026-11-17实测；单维度归一化契约仍分别保留核验状态。
 
 function assertF10Code(code: unknown): string {
   const c = normalizeCode(String(code ?? ''))
@@ -393,13 +393,14 @@ async function emF10PageAjax(moduleUrl: string, code: unknown, ctx: ProviderCont
   const secu = toSecuCode(assertF10Code(code))
   return httpGetJson<Record<string, unknown>>(
     moduleUrl,
-    { SECUCODE: secu },
+    { code: secu.split('.').reverse().join('') },
     opts(ctx, 'https://emweb.securities.eastmoney.com/'),
   )
 }
 
 async function emF10Survey(args: Record<string, unknown>, ctx: ProviderContext) {
   const data = normalizeCompanySurvey(await emF10PageAjax(F10_ENDPOINTS.companySurvey, args.code, ctx))
+  if (!data.name && !data.orgName && !data.profile) throw new Error('F10公司概况未返回业务字段（非可用资料），请检查上游响应')
   return { data, sampleKeys: Object.keys(data) }
 }
 
@@ -433,6 +434,7 @@ async function emF10Financials(args: Record<string, unknown>, ctx: ProviderConte
     opts(ctx, 'https://emweb.securities.eastmoney.com/'),
   )
   const data = normalizeMainFinancials({ result: json.result })
+  if (!data.rows.length) throw new Error('F10主要财务指标返回空表，未取得有效报告期数据')
   return { data, sampleKeys: Object.keys(data) }
 }
 
@@ -458,8 +460,9 @@ async function emF10Valuation(args: Record<string, unknown>, ctx: ProviderContex
 }
 
 async function emF10Peers(args: Record<string, unknown>, ctx: ProviderContext) {
-  // 上游同行接口未核实：URL 来自 F10 页面结构推断，解析全部防御式。
+  // IndustryAnalysis/PageAjax structure probed on 2026-11-17; peers use CORRE_SECURITY_CODE.
   const data = normalizePeers(await emF10PageAjax(F10_ENDPOINTS.peerComparison, args.code, ctx))
+  if (!data.rows.length) throw new Error('F10同行比较未取得有效可比公司记录')
   return { data, sampleKeys: Object.keys(data) }
 }
 

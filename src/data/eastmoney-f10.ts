@@ -2,9 +2,9 @@
  * 东财 F10 七维数据：URL/参数构造 + 纯函数规范化 + 估值分位/同行比较口径。
  *
  * 本模块不做 HTTP（provider 负责抓取），全部解析为纯函数，便于离线 fixture
- * 固定契约。**契约核实状态**：本环境直连所列 JSON 接口时 TLS 握手被中断，
- * 字段解析按 F10 页面语义 + AkShare 同源字段名做防御式映射；每份结果都带
- * `contractVerified: false`，代表「尚未用线上真实响应核实」，不冒充已验证。
+ * 固定契约。PageAjax 映射依据已观测的真实表名/字段名，并用合成同结构 fixture
+ * 做离线回归；本模块不执行线上契约核验。结果保留 `contractVerified: false`，
+ * 不把 fixture 通过或部分接口的实测推广为每次响应/全部七维契约已验证。
  *
  * 时点纪律：报告期（reportPeriod）≠ 公告日（publishedAt）≠ 抓取时间
  * （retrievedAt），三者分列；历史因子只能用当时可得的公告时间。
@@ -35,7 +35,7 @@ export const F10_ENDPOINTS = {
   shareholderResearch: 'https://emweb.securities.eastmoney.com/PC_HSF10/ShareholderResearch/PageAjax',
   mainFinancials: 'https://datacenter.eastmoney.com/securities/api/data/get',
   valuation: 'https://datacenter-web.eastmoney.com/api/data/v1/get',
-  /** 同行比较页真实请求未核实（本环境无法访问 F10 XHR）；防御式解析。 */
+  /** 同行比较 PageAjax；按已观测 gzbj/czxbj 表解析，不代表每次响应已核验。 */
   peerComparison: 'https://emweb.securities.eastmoney.com/PC_HSF10/IndustryAnalysis/PageAjax',
 } as const
 
@@ -44,33 +44,46 @@ export function isAShareCode(code: string): boolean {
   return /^\d{6}(\.(SH|SZ|BJ))?$/.test(code.trim().toUpperCase().replace(/\.SS$/, '.SH'))
 }
 
+/** Only select a named table (or a bare row array), never scan unrelated F10 tables.
+ * data/result are transport envelopes, not permission to flatten every nested array.
+ * An explicitly empty table is authoritative and must not fall through to another table.
+ */
 function rowsOf(raw: unknown, ...keys: string[]): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = []
-  const walk = (v: unknown, depth: number) => {
-    if (!v || depth > 4 || out.length > 5000) return
-    if (Array.isArray(v)) {
-      if (v.length && v.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
-        out.push(...(v as Array<Record<string, unknown>>))
-        return
-      }
-      for (const x of v) walk(x, depth + 1)
-      return
+  const records = (xs: unknown[]): Array<Record<string, unknown>> => xs.filter(
+    (x): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x),
+  ).slice(0, 5000)
+  if (Array.isArray(raw)) return records(raw)
+  const find = (value: unknown, depth: number): Array<Record<string, unknown>> | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 4) return undefined
+    const obj = value as Record<string, unknown>
+    for (const key of keys) {
+      if (Array.isArray(obj[key])) return records(obj[key] as unknown[])
     }
-    if (typeof v === 'object') {
-      for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
-        if (keys.length && keys.includes(k) && Array.isArray(x)) { walk(x, depth + 1); continue }
-        walk(x, depth + 1)
-      }
+    for (const envelope of ['data', 'result']) {
+      const hit = find(obj[envelope], depth + 1)
+      if (hit !== undefined) return hit
     }
+    return undefined
   }
-  if (keys.length) {
-    for (const k of keys) {
-      const hit = (raw as Record<string, unknown> | undefined)?.[k]
-      if (Array.isArray(hit)) out.push(...(hit as Array<Record<string, unknown>>))
-    }
-  }
-  if (!out.length) walk(raw, 0)
-  return out
+  return find(raw, 0) ?? []
+}
+
+function hasTable(raw: unknown, ...keys: string[]): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+  const obj = raw as Record<string, unknown>
+  return keys.some((key) => Array.isArray(obj[key]))
+    || ['data', 'result'].some((key) => obj[key] && obj[key] !== raw && hasTable(obj[key], ...keys))
+}
+
+function flatObject(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const obj = raw as Record<string, unknown>
+  // Flattened compatibility payloads only; never incorporate unrelated table rows.
+  return { ...flatEnvelope(obj.result), ...flatEnvelope(obj.data), ...obj }
+}
+
+function flatEnvelope(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
 }
 
 function pick(row: Record<string, unknown>, ...keys: string[]): unknown {
@@ -121,8 +134,14 @@ export interface CompanySurvey {
 }
 
 export function normalizeCompanySurvey(raw: unknown): CompanySurvey {
-  const flat: Record<string, unknown> = {}
-  for (const row of rowsOf(raw)) Object.assign(flat, row)
+  const flat: Record<string, unknown> = { ...flatObject(raw) }
+  for (const row of rowsOf(raw, 'jbzl')) Object.assign(flat, row)
+  // Listing information is a separate table; do not merge every PageAjax array.
+  const listing = rowsOf(raw, 'fxxg')[0]
+  if (listing) {
+    const listingDate = pick(listing, 'LISTING_DATE', 'LISTED_DATE')
+    if (listingDate !== undefined) flat.LISTING_DATE = listingDate
+  }
   const s: CompanySurvey = {
     name: pick(flat, 'SECURITY_NAME_ABBR', 'SECURITY_NAME', 'name') ? String(pick(flat, 'SECURITY_NAME_ABBR', 'SECURITY_NAME', 'name')) : undefined,
     orgName: pick(flat, 'ORG_NAME', 'ORG_SHORT_NAME') ? String(pick(flat, 'ORG_NAME', 'ORG_SHORT_NAME')) : undefined,
@@ -149,6 +168,8 @@ export interface BusinessCompositionRow {
   revenue?: number
   revenuePct?: number
   cost?: number
+  costPct?: number
+  rank?: number
   profit?: number
   profitPct?: number
   grossMarginPct?: number
@@ -156,6 +177,7 @@ export interface BusinessCompositionRow {
 }
 
 export interface BusinessComposition {
+  businessScope?: string
   rows: BusinessCompositionRow[]
   meta: F10Meta
 }
@@ -172,6 +194,8 @@ export function normalizeBusinessComposition(raw: unknown): BusinessComposition 
       revenue: numOrUndef(pick(r, 'MAIN_BUSINESS_INCOME', 'MBI', 'revenue')),
       revenuePct: numOrUndef(pick(r, 'MBI_RATIO', 'INCOME_RATIO', 'revenuePct')),
       cost: numOrUndef(pick(r, 'MAIN_BUSINESS_COST', 'MBC', 'cost')),
+      costPct: numOrUndef(pick(r, 'MBC_RATIO', 'costPct')),
+      rank: numOrUndef(pick(r, 'RANK', 'rank')),
       profit: numOrUndef(pick(r, 'MAIN_BUSINESS_RPOFIT', 'MAIN_BUSINESS_PROFIT', 'MBR', 'profit')),
       profitPct: numOrUndef(pick(r, 'MBR_RATIO', 'PROFIT_RATIO', 'profitPct')),
       grossMarginPct: numOrUndef(pick(r, 'GROSS_RPOFIT_RATIO', 'GROSS_PROFIT_RATIO', 'grossMarginPct')),
@@ -180,6 +204,7 @@ export function normalizeBusinessComposition(raw: unknown): BusinessComposition 
   }
   const periods = [...new Set(out.map((r) => r.reportPeriod).filter(Boolean))] as string[]
   return {
+    businessScope: pick(rowsOf(raw, 'zyfw')[0] ?? {}, 'BUSINESS_SCOPE') as string | undefined,
     rows: out,
     meta: metaOf(F10_ENDPOINTS.businessAnalysis, {
       unit: '元',
@@ -223,13 +248,13 @@ export function normalizeMainFinancials(raw: unknown): MainFinancials {
     if (!reportPeriod) continue
     out.push({
       reportPeriod,
-      reportType: pick(r, 'REPORT_TYPE', 'REPORT_NAME') ? String(pick(r, 'REPORT_TYPE', 'REPORT_NAME')) : undefined,
+      reportType: pick(r, 'REPORT_DATE_NAME', 'REPORT_TYPE', 'REPORT_NAME') ? String(pick(r, 'REPORT_DATE_NAME', 'REPORT_TYPE', 'REPORT_NAME')) : undefined,
       publishedAt: dateOrUndef(pick(r, 'NOTICE_DATE', 'PUBLISH_DATE', 'ANNOUNCE_DATE')),
       eps: numOrUndef(pick(r, 'EPSJB', 'BASIC_EPS', 'EPS')),
-      bps: numOrUndef(pick(r, 'BPS', 'MGJYXJJE')),
+      bps: numOrUndef(pick(r, 'BPS', 'NET_ASSETS_PER_SHARE')),
       roeWeighted: numOrUndef(pick(r, 'ROEJQ', 'ROE', 'ROE_WEIGHTED')),
-      revenue: numOrUndef(pick(r, 'TOTAL_OPERATE_INCOME', 'OPERATE_INCOME')),
-      netProfit: numOrUndef(pick(r, 'PARENT_NETPROFIT', 'NETPROFIT')),
+      revenue: numOrUndef(pick(r, 'TOTALOPERATEREVE', 'TOTAL_OPERATE_INCOME', 'OPERATE_INCOME')),
+      netProfit: numOrUndef(pick(r, 'PARENTNETPROFIT', 'PARENT_NETPROFIT', 'NETPROFIT')),
       deductedProfit: numOrUndef(pick(r, 'KCFJCXSYJLR', 'DEDUCT_PARENT_NETPROFIT')),
       revenueYoY: numOrUndef(pick(r, 'TOTALOPERATEREVETZ', 'REVENUE_YOY')),
       netProfitYoY: numOrUndef(pick(r, 'PARENTNETPROFITTZ', 'NETPROFIT_YOY')),
@@ -256,6 +281,9 @@ export function normalizeMainFinancials(raw: unknown): MainFinancials {
 
 export interface CoreConcept {
   name: string
+  boardCode?: string
+  keyword?: string
+  classification?: string
   reason?: string
   sourceTime?: string
 }
@@ -266,14 +294,19 @@ export interface CoreConcepts {
 }
 
 export function normalizeCoreConcepts(raw: unknown): CoreConcepts {
-  const rows = rowsOf(raw, 'keyConcept', 'KEYCONCEPT', 'data')
+  const rows = Array.isArray(raw) ? rowsOf(raw) : [...rowsOf(raw, 'ssbk'), ...rowsOf(raw, 'hxtc')]
+  // Legacy normalized payloads are accepted only when the actual tables are absent.
+  if (!rows.length && !hasTable(raw, 'ssbk', 'hxtc')) rows.push(...rowsOf(raw, 'keyConcept', 'KEYCONCEPT', 'data'))
   const out: CoreConcept[] = []
   for (const r of rows) {
-    const name = String(pick(r, 'KEYWORD_NAME', 'CONCEPT_NAME', 'BOARD_NAME', 'name') ?? '')
+    const name = String(pick(r, 'BOARD_NAME', 'MAINPOINT', 'KEYWORD', 'KEYWORD_NAME', 'CONCEPT_NAME', 'name') ?? '')
     if (!name) continue
     out.push({
       name,
-      reason: pick(r, 'KEYWORD_EXPLAIN', 'REASON', 'EXPLAIN', 'description') ? String(pick(r, 'KEYWORD_EXPLAIN', 'REASON', 'EXPLAIN', 'description')) : undefined,
+      boardCode: pick(r, 'BOARD_CODE') !== undefined ? String(pick(r, 'BOARD_CODE')) : undefined,
+      keyword: pick(r, 'KEYWORD') !== undefined ? String(pick(r, 'KEYWORD')) : undefined,
+      classification: pick(r, 'KEY_CLASSIF') !== undefined ? String(pick(r, 'KEY_CLASSIF')) : undefined,
+      reason: pick(r, 'MAINPOINT_CONTENT', 'KEYWORD_EXPLAIN', 'REASON', 'EXPLAIN', 'description') ? String(pick(r, 'MAINPOINT_CONTENT', 'KEYWORD_EXPLAIN', 'REASON', 'EXPLAIN', 'description')) : undefined,
       sourceTime: dateOrUndef(pick(r, 'IN_DATE', 'REPORT_DATE', 'CREATE_DATE', 'time')),
     })
   }
@@ -292,6 +325,7 @@ export interface ShareholderCountRow {
   reportPeriod: string
   holderCount?: number
   changePct?: number
+  avgFreeShares?: number
   publishedAt?: string
 }
 
@@ -308,8 +342,9 @@ export function normalizeShareholderCount(raw: unknown): ShareholderCount {
     if (!reportPeriod) continue
     out.push({
       reportPeriod,
-      holderCount: numOrUndef(pick(r, 'HOLDER_NUM', 'HOLDER_COUNT', 'GDRS')),
-      changePct: numOrUndef(pick(r, 'HOLDER_NUM_RATIO', 'CHANGE_RATIO', 'HB')),
+      holderCount: numOrUndef(pick(r, 'HOLDER_TOTAL_NUM', 'HOLDER_NUM', 'HOLDER_COUNT', 'GDRS')),
+      changePct: numOrUndef(pick(r, 'TOTAL_NUM_RATIO', 'HOLDER_NUM_RATIO', 'CHANGE_RATIO', 'HB')),
+      avgFreeShares: numOrUndef(pick(r, 'AVG_FREE_SHARES')),
       publishedAt: dateOrUndef(pick(r, 'NOTICE_DATE', 'PUBLISH_DATE')),
     })
   }
@@ -453,17 +488,19 @@ export interface PeerComparison {
 }
 
 export function normalizePeers(raw: unknown): PeerComparison {
-  const rows = rowsOf(raw, 'data', 'result', 'hyfx')
+  // gzbj is the valuation comparison table. gsgm includes the subject company
+  // and is not an industry average; never flatten it into peer valuation rows.
+  const rows = rowsOf(raw, 'gzbj', 'czxbj', 'hyfx', 'data', 'result')
   const out: PeerRow[] = []
   for (const r of rows) {
-    const code = String(pick(r, 'SECURITY_CODE', 'CODE', 'code') ?? '')
+    const code = String(pick(r, 'CORRE_SECURITY_CODE', 'SECURITY_CODE', 'CODE', 'code') ?? '')
     if (!code) continue
     out.push({
       code,
-      name: pick(r, 'SECURITY_NAME_ABBR', 'NAME', 'name') ? String(pick(r, 'SECURITY_NAME_ABBR', 'NAME', 'name')) : undefined,
+      name: pick(r, 'CORRE_SECURITY_NAME', 'SECURITY_NAME_ABBR', 'NAME', 'name') ? String(pick(r, 'CORRE_SECURITY_NAME', 'SECURITY_NAME_ABBR', 'NAME', 'name')) : undefined,
       industry: pick(r, 'INDUSTRY', 'BOARD_NAME') ? String(pick(r, 'INDUSTRY', 'BOARD_NAME')) : undefined,
       peTtm: numOrUndef(pick(r, 'PE_TTM', 'peTtm')),
-      pb: numOrUndef(pick(r, 'PB', 'pb')),
+      pb: numOrUndef(pick(r, 'PB_MRQ', 'PB', 'pb')),
       marketCap: numOrUndef(pick(r, 'TOTAL_MARKET_CAP', 'MARKET_CAP', 'marketCap')),
       reportPeriod: dateOrUndef(pick(r, 'REPORT_DATE', 'reportPeriod')),
     })

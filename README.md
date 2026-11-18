@@ -45,6 +45,10 @@
 |---|---|
 | [完整使用与维护手册](<docs/complete-guide.md>) | 安装、研究工作流、数据、更新、限制和排障总入口 |
 | [页面跳转与内容分工](<docs/product-navigation.md>) | 总览精简、规划归位、证券返回与草稿保护 |
+| [组合策略产品方案](<docs/portfolio-strategy-design.md>) | 多持仓、战略目标、约束、漂移、换手和环境变化复核 |
+| [组合回测·核验·审批](<docs/portfolio-workflows.md>) | 多资产再平衡账务、数据核验与版本状态机 |
+| [官方竞品调研](<docs/portfolio-competitors.md>) | PV、Composer与公开LEAN框架证据，功能/许可边界 |
+| [高级单标的实验](<docs/strategy-laboratory.md>) | 固定模板、未复权数据门禁、留出比较，不等于组合回测 |
 | [K线与事件说明](<docs/history-kline.md>) | 覆盖、口径、刷新、缓存保护与缺口解释 |
 | [政策采集与历史回溯](<docs/policy-collection.md>) | 参数、附件、日期、更新与合规边界 |
 | [数据源审计矩阵](<docs/data-source-audit.md>) | 已有源、实测证据与缺口 |

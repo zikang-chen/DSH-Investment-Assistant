@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { chartTargetFor } from '../src/client/chart-navigation.js'
+const hk = chartTargetFor({ code: '00700', name: '腾讯', type: 'stock', secid: '116.00700', market: '港股' }, 1)
+assert.equal(hk.kind, 'hk'); assert.equal(hk.secid, '116.00700'); assert.equal(hk.name, '腾讯')
+assert.equal(chartTargetFor({ code: 'sh600519', type: 'stock' }, 1).kind, 'a')
+assert.equal(chartTargetFor({ code: '000001', type: 'fund' }, 1).kind, 'fund')
+assert.equal(chartTargetFor({ code: 'NVDA', type: 'stock', secid: '105.NVDA', market: '美股' }, 1).kind, 'us')
+const jp = chartTargetFor({ code: '7203', type: 'stock', secid: '176.7203', market: '日股' }, 1)
+assert.equal(jp.secid, '176.7203'); assert.equal(jp.market, '日股')
+const entry = readFileSync('src/client/index.tsx', 'utf8')
+assert.match(entry, /props\.klineTarget\?\.at\]/)
+assert.match(entry, /h\(GlobalSecurityChart, \{ key: props\.klineTarget\.secid/)
+assert.match(entry, /setChartOrigin\(item\)/)
+assert.match(entry, /setDossierTarget\(\{ \.\.\.chartOrigin, at: Date\.now\(\) \}\)/)
+const refresh = readFileSync('src/client/global-security-chart.tsx', 'utf8')
+assert.match(refresh, /encodeURIComponent\(target.secid\)/)
+assert.match(refresh, /90_000/)
+assert.ok(!refresh.includes('/history?'))
+console.log('PASS chart navigation: identity retained, prefixed A-share, same-code fund, overseas secid route, chart scroll and origin restoration')

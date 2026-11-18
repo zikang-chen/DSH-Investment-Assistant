@@ -12,6 +12,12 @@ import { buildFundDossier } from './data/fund-dossier.js'
 import { normalizeGlobalRegion } from './data/global-indices.js'
 import { fetchGlobalQuote, fetchGlobalKline } from './data/global-quotes.js'
 import { listCnDatasets, fetchCnDataset, checkCnBridge } from './data/cn-datasets.js'
+import { fetchStrategyExperiment } from './strategy/lab-service.js'
+import path from 'node:path'
+import { PortfolioVersionStore } from './strategy/portfolio-versions.js'
+import { importPortfolioSnapshot } from './strategy/portfolio-import.js'
+import { verifyPortfolioData, type PortfolioVerificationInput } from './strategy/portfolio-verification.js'
+import { runPortfolioBacktest } from './strategy/portfolio-backtest.js'
 import { buildLookthrough } from './lookthrough.js'
 import type { ReminderOptions, ReminderScanResult, ReminderStore } from './reminders.js'
 import type { PanelBus } from './panel-bus.js'
@@ -298,6 +304,7 @@ export function registerRoutes(
   /** 金融学习（面板「学习」页：概念检索、三级解释、学习进度）。 */
   learn?: { current?: LearningStore },
 ): () => void {
+  const portfolioVersions = new PortfolioVersionStore(path.join(path.dirname(store.path), 'portfolio-strategy'))
   return webServer.register({
     kind: 'prefix',
     path: API_PREFIX,
@@ -990,6 +997,45 @@ export function registerRoutes(
           } catch (err) {
             return sendJson(res, 400, { ok: false, code, error: err instanceof Error ? err.message : String(err) })
           }
+        }
+        if (req.method === 'GET' && sub === '/strategy/versions') {
+          return sendJson(res, 200, { ok: true, entries: await portfolioVersions.list() })
+        }
+        if (req.method === 'POST' && sub === '/strategy/versions') {
+          const body = await readBody(req)
+          const entry = await portfolioVersions.save(body as never)
+          return sendJson(res, 200, { ok: true, entry })
+        }
+        if (req.method === 'POST' && sub === '/strategy/transition') {
+          const body = await readBody(req)
+          if (body.userConfirmed !== true) return sendJson(res, 400, {ok:false,error:'须在面板明确确认纸面策略状态变更'})
+          if (body.action === 'approve') {
+            const draft = await portfolioVersions.get(String(body.id ?? ''))
+            if (!draft) return sendJson(res, 404, { ok: false, error: '未找到该组合版本' })
+            const asOf = Date.parse(`${draft.policy.asOf}T00:00:00Z`)
+            const ageDays = (Date.now() - asOf) / 86_400_000
+            if (!Number.isFinite(ageDays) || ageDays < 0 || ageDays > 7) {
+              return sendJson(res, 400, { ok: false, error: '批准前的核验已超过7天或日期异常：请以今天的行情/证据重新保存新版本再批准。旧快照不能当当前核验。' })
+            }
+          }
+          const entry = await portfolioVersions.transition({ ...body, actor: 'user' } as never)
+          return sendJson(res, 200, {ok:true,entry})
+        }
+        if (req.method === 'POST' && sub === '/strategy/import') {
+          const body = await readBody(req)
+          return sendJson(res, 200, await importPortfolioSnapshot(store, finance, body.authorized === true))
+        }
+        if (req.method === 'POST' && sub === '/strategy/verify') {
+          const body = await readBody(req)
+          return sendJson(res, 200, verifyPortfolioData(body as unknown as PortfolioVerificationInput))
+        }
+        if (req.method === 'POST' && sub === '/strategy/backtest') {
+          const body = await readBody(req)
+          return sendJson(res, 200, runPortfolioBacktest(body as never))
+        }
+        if (req.method === 'POST' && sub === '/strategy/experiment') {
+          const body = await readBody(req)
+          return sendJson(res, 200, await fetchStrategyExperiment(String(body.code ?? ''), body.initialCash === undefined ? 100000 : Number(body.initialCash)))
         }
         if (history && req.method === 'POST' && sub === '/history/sync') {
           const body = await readBody(req)

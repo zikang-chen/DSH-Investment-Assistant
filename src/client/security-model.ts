@@ -92,13 +92,69 @@ export function dossierRows(data: unknown): Array<Record<string, string>> {
   }
   return data === undefined || data === null ? [] : [{ 值: text(data) }]
 }
+/** Known source keys only: unknown keys stay visible verbatim, never guessed or discarded. */
+const COMPANY_FIELD_LABELS: Record<string, string> = {
+  name: '证券简称', securitynameabbr: '证券简称', securityname: '证券名称', stockname: '股票名称',
+  orgname: '公司名称', orgshortname: '公司简称', companyname: '公司名称',
+  code: '证券代码', securitycode: '证券代码', secucode: '证券代码（含市场）',
+  industry: '所属行业', industrycsrc1: '所属行业', csrcindustry: '所属行业',
+  region: '所在地区', province: '所在省份', address: '地址',
+  listingdate: '上市日期', listeddate: '上市日期', mainbusiness: '主营业务',
+  businessscope: '经营范围', orgprofile: '公司简介', companyprofile: '公司简介', profile: '公司简介',
+  website: '公司网站', orgweb: '公司网站',
+  meta: '来源与口径', metadata: '来源与口径', provider: '数据提供方', source: '来源',
+  endpointref: '原始接口', sourceurl: '来源链接', retrievedat: '抓取时间（非数据时点）',
+  fetchedat: '抓取时间（非数据时点）', contractverified: '上游契约已核验',
+  reportperiod: '报告期', publishedat: '公告时间', asof: '数据时点',
+  unit: '单位', currency: '币种', missing: '缺失字段', warnings: '提示',
+  rows: '记录', data: '数据', items: '条目', records: '记录', result: '返回结果',
+  jbzl: '基本资料', jygk: '经营概况', gsgk: '公司概况',
+}
+const companyKey = (key: string): string => key.trim().replace(/[\s_-]+/g, '').toLowerCase()
+const companyLabel = (key: string): string => Object.hasOwn(COMPANY_FIELD_LABELS, companyKey(key)) ? COMPANY_FIELD_LABELS[companyKey(key)]! : key
+const COMPANY_META_KEYS = new Set(['meta', 'metadata', 'provider', 'source', 'endpointref', 'sourceurl', 'retrievedat', 'fetchedat', 'contractverified', 'reportperiod', 'publishedat', 'asof', 'unit', 'currency', 'missing', 'warnings'])
+export interface CompanyOverviewField { key: string; label: string; value: string; metadata: boolean }
+/**
+ * A lossless display projection, not a provider repair: keep every leaf, row index and wrapper path.
+ * Never merge multiple company records, infer units, or promote fetchedAt to the data date.
+ */
+export function companyOverviewFields(data: unknown): CompanyOverviewField[] {
+  const fields: CompanyOverviewField[] = []
+  const ancestors = new Set<object>()
+  const walk = (value: unknown, path: string[], labels: string[], metadata: boolean): void => {
+    const emit = (raw: unknown) => fields.push({ key: JSON.stringify(path), label: labels.join(' / ') || '值', value: text(raw), metadata })
+    if (value === null || typeof value !== 'object') { emit(value); return }
+    if (ancestors.has(value)) { emit('（循环引用，无法展开）'); return }
+    ancestors.add(value)
+    if (Array.isArray(value)) {
+      if (!value.length) emit('[]')
+      value.forEach((item, index) => walk(item, [...path, String(index)], [...labels, `第 ${index + 1} 项`], metadata))
+    } else {
+      const entries = Object.entries(value)
+      // Legacy field/value rows are already named fields. Keep their extra metadata/siblings, too.
+      const fieldEntry = entries.find(([key, raw]) => ['字段', '项目', 'field'].includes(key) && typeof raw === 'string')
+      const valueEntry = entries.find(([key]) => ['值', '内容', 'value'].includes(key))
+      if (fieldEntry && valueEntry) {
+        const field = String(fieldEntry[1])
+        walk(valueEntry[1], [...path, valueEntry[0]], [...labels, companyLabel(field)], metadata || COMPANY_META_KEYS.has(companyKey(field)))
+      }
+      for (const [key, raw] of entries) {
+        if (fieldEntry && valueEntry && (key === fieldEntry[0] || key === valueEntry[0])) continue
+        walk(raw, [...path, key], [...labels, companyLabel(key)], metadata || COMPANY_META_KEYS.has(companyKey(key)))
+      }
+      if (!entries.length) emit('{}')
+    }
+    ancestors.delete(value)
+  }
+  if (data !== undefined && data !== null) walk(data, [], [], false)
+  return fields
+}
 export function dossierName(data: SecurityDossier, fallback?: string): string {
   for (const section of data.sections) {
     if (!['overview', 'company_survey'].includes(section.key)) continue
-    const rows = dossierRows(section.data)
-    const nameRow = rows.find(row => /^(基金名称|证券简称|公司名称|股票名称|公司简称)$/.test(row.字段 ?? row.项目 ?? ''))
-    const name = nameRow?.值 ?? nameRow?.内容
-    if (name && name !== '—') return name
+    const fields = companyOverviewFields(section.data)
+    const name = fields.find(field => !field.metadata && /^(基金名称|证券简称|公司名称|股票名称|公司简称)$/.test(field.label.split(' / ').at(-1) ?? '') && field.value !== '—')?.value
+    if (name) return name
   }
   return fallback || data.code
 }

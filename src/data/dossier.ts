@@ -197,7 +197,7 @@ function rowCount(data: unknown): number {
   if (data && typeof data === 'object') {
     const rows = (data as { rows?: unknown }).rows
     if (Array.isArray(rows)) return rows.length
-    return Object.keys(data as Record<string, unknown>).length
+    return Object.entries(data as Record<string, unknown>).filter(([key, value]) => key !== 'meta' && value !== undefined && value !== null && value !== '').length
   }
   return 0
 }
@@ -277,7 +277,7 @@ export async function buildStockDossier(
         if (typeof d !== 'object') return 1
         let n = 0
         for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
-          if (NON_DATA_KEYS.has(k)) continue
+          if (NON_DATA_KEYS.has(k) && !(['company_survey', 'overview'].includes(spec.key) && ['name', 'profile'].includes(k))) continue
           if (k === 'history' || k === 'rows') {
             if (Array.isArray(v)) n += v.length
             continue

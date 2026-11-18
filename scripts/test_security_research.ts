@@ -77,7 +77,7 @@ test('security entry, detail, chart and private-data boundaries are actually wir
   assert.match(entry, /h\(SecurityWorkspace/)
   assert.match(entry, /window\.addEventListener\(SECURITY_OPEN_EVENT/)
   assert.match(entry, /window\.removeEventListener\(SECURITY_OPEN_EVENT/)
-  assert.match(entry, /onChart: \(item\) => \{ if \(!selectTab\('quotes'\)\) return; setChartFromDossier\(true\); setKlineTarget\(\{ code: item\.code, kind: inferKlineKind\(item\.code, item\.type\)/)
+  assert.match(entry, /onChart: \(item\) => \{ if \(!selectTab\('quotes'\)\) return; setChartFromDossier\(true\); setChartOrigin\(item\); setKlineTarget\(chartTargetFor\(item, Date\.now\(\)\)\)/)
   assert.match(detail, /sequence\.current === id/)
   assert.match(detail, /section\.provider/)
   assert.match(detail, /section\.dataAsOf/)

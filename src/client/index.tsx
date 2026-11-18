@@ -5,6 +5,10 @@ import { WORKSPACE_CSS } from './workspace-styles.js'
 import { FundWorkspace } from './fund-workspace.js'
 import { officialCollectPrompt, isCollectableUrl } from './policy-collect-model.js'
 import { shouldRefreshKline, klineRefreshSince } from './kline-refresh.js'
+import { chartTargetFor, type ChartTarget } from './chart-navigation.js'
+import { GlobalSecurityChart } from './global-security-chart.js'
+import { StrategyLab } from './strategy-lab.js'
+import { PortfolioStrategy } from './portfolio-strategy.js'
 import { CnDatasetsPanel } from './cn-datasets-panel.js'
 import { KlineChart } from './kline-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
@@ -13,7 +17,7 @@ import { HoldingEntry } from './holding-entry.js'
 import { emptyHoldingDraft, type HoldingEntryDraft, type HoldingPreviewReply } from './holding-entry-model.js'
 import { SecuritySearch } from './security-search.js'
 import { SecurityWorkspace, SecurityLink } from './security-workspace.js'
-import { SECURITY_OPEN_EVENT, requestSecurityOpen, type SecurityIdentity } from './security-model.js'
+import { SECURITY_OPEN_EVENT, isGlobalSecurity, requestSecurityOpen, type SecurityIdentity } from './security-model.js'
 import { SECURITY_CSS } from './security-styles.js'
 import { valuation, quoteCurrency } from '../valuation.js'
 import { createElement as h, useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
@@ -1235,7 +1239,7 @@ function QuotesView(props: {
   /** 点击个股行 → 下方K线工作区加载该标的（行情与K线已合并）。 */
   onSelectKline?: (code: string, type?: AssetType) => void
   /** K线工作区目标（面板导航/「在行情页看K线」共用；at 变化重新加载）。 */
-  klineTarget?: { code: string; kind: string; at: number }
+  klineTarget?: ChartTarget
 }) {
   const { data, quoteBy, loading, mutate } = props
   const [wCode, setWCode] = useState('')
@@ -1244,8 +1248,16 @@ function QuotesView(props: {
   const chartRef = useRef<HTMLDivElement | null>(null)
   const pickKline = (code: string, type?: AssetType) => {
     props.onSelectKline?.(code, type)
-    requestAnimationFrame(() => chartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }
+  // External navigation mounts this page above the chart. Scroll after commit,
+  // including when a different security is requested while the page is open.
+  useEffect(() => {
+    if (!props.klineTarget) return
+    const frame = requestAnimationFrame(() => chartRef.current?.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start',
+    }))
+    return () => cancelAnimationFrame(frame)
+  }, [props.klineTarget?.at])
   // 窄面板：添加区换行排布（输入框/类型/按钮一行，搜索框独占一行），否则会横向溢出。
   const tight = usePanelWidth() < TIGHT_W
   const watchQuotes: LiveQuote[] = data.watchlist.map((w) => quoteBy.get(keyOf(w.code, w.type)) ?? { code: w.code, type: w.type, name: w.name })
@@ -1296,7 +1308,9 @@ function QuotesView(props: {
         h('button', { style: S.btnPrimary, onClick: addWatch }, '添加'),
 
       ]),
-    h('div', { ref: chartRef }, h(KlineView, { data, requested: props.klineTarget })),
+    h('div', { ref: chartRef }, props.klineTarget?.secid && isGlobalSecurity({ ...props.klineTarget, type: props.klineTarget.kind === 'fund' ? 'fund' : 'stock' })
+      ? h(GlobalSecurityChart, { key: props.klineTarget.secid, target: props.klineTarget, get: apiGet })
+      : h(KlineView, { data, requested: props.klineTarget })),
     h('div', { style: { ...S.muted, fontSize: 11, display: 'flex', gap: 8, flexWrap: 'wrap', padding: '0 2px' } },
       h('span', null, '数据优先 WeStock（本地 CLI，批量取）；不通时自动回落东财/腾讯。'),
       perf ? h('span', null, `本次缓存命中 ${perf.cacheHits}/${perf.calls + perf.cacheHits} · 平均 ${perf.avgLatencyMs}ms${perf.coalesced ? ` · 合并请求 ${perf.coalesced}` : ''}`) : null))
@@ -3843,7 +3857,7 @@ const TAB_GROUPS = [
     { id: 'home', label: '工作台' }, { id: 'evidence', label: '证据待办' },
   ] },
   { id: 'judgement', label: '投资判断', items: [
-    { id: 'advice', label: '研究判断' }, { id: 'journal', label: '档案与复盘' },
+    { id: 'advice', label: '研究判断' }, { id: 'strategy', label: '组合策略' }, { id: 'journal', label: '档案与复盘' },
   ] },
   { id: 'market', label: '市场研究', items: [
     { id: 'quotes', label: '行情' }, { id: 'macro', label: '宏观' }, { id: 'policy', label: '政策' },
@@ -3953,9 +3967,10 @@ function PanelBody(props: {
   // 跨页聚焦：从「投资判断」的证据跳到政策页时，记录要聚焦的政策 id。
   const [policyFocus, setPolicyFocus] = useState('')
   const [adviceSelection, setAdviceSelection] = useState('')
-  const [klineTarget, setKlineTarget] = useState<{ code: string; kind: string; at: number } | undefined>()
+  const [klineTarget, setKlineTarget] = useState<ChartTarget | undefined>()
   const [securityReturnTab, setSecurityReturnTab] = useState('quotes')
   const [chartFromDossier, setChartFromDossier] = useState(false)
+  const [chartOrigin, setChartOrigin] = useState<SecurityIdentity | undefined>()
   /** 录入草稿由面板持有：去档案/分析后返回仍能续填，避免数量与成本被重置。 */
   const [holdingDraft, setHoldingDraft] = useState<HoldingEntryDraft>(() => emptyHoldingDraft())
   /** 数据源页有未保存草稿时，切走前显式确认，不能静默丢弃。 */
@@ -4073,7 +4088,10 @@ function PanelBody(props: {
       : cmd.tab === 'kline' || cmd.tab === 'market' ? 'quotes' : cmd.tab
     if (!selectTab(destination)) return // cancelled navigation must have zero target/analysis side effects
     if ((cmd.tab === 'kline' || cmd.tab === 'market' || cmd.tab === 'quotes') && cmd.code) {
-      setKlineTarget({ code: cmd.code, kind: cmd.kind ?? (cmd.type === 'fund' ? 'fund' : inferKlineKind(cmd.code, cmd.type as AssetType | undefined)), at: Date.now() })
+      const target = chartTargetFor({ code: cmd.code, type: cmd.type === 'fund' ? 'fund' : 'stock' }, Date.now())
+      if (cmd.kind && ['a', 'hk', 'us', 'fund'].includes(cmd.kind)) target.kind = cmd.kind as ChartTarget['kind']
+      setChartFromDossier(false)
+      setKlineTarget(target)
     }
     if (cmd.tab === 'dossier' && cmd.code) {
       setDossierTarget({ code: cmd.code, type: cmd.type === 'fund' ? 'fund' : 'stock', at: Date.now() })
@@ -4217,10 +4235,10 @@ function PanelBody(props: {
         onOpenAdvice: (id: string) => { if (selectTab('advice')) setAdviceSelection(id) },
         onOpenPolicy: (id: string) => { if (selectTab('policy')) setPolicyFocus(id) } }) : null,
       tab === 'journal' ? h(PersonalHome, { embedded: true, deliver: deliverToChat, navigate: selectTab, useBus, openReminders: () => { setBellOpen(true); void loadReminders() } }) : null,
-      tab === 'quotes' && chartFromDossier ? h('button', { style: S.btn, onClick: () => { if (selectTab('dossier', true)) setChartFromDossier(false) } }, '← 返回证券档案') : null,
+      tab === 'quotes' && chartFromDossier ? h('button', { style: S.btn, onClick: () => { if (selectTab('dossier', true)) { if (chartOrigin) setDossierTarget({ ...chartOrigin, at: Date.now() }); setChartFromDossier(false) } } }, '← 返回证券档案') : null,
       tab === 'quotes' ? h(QuotesView, {
         data, quoteBy, loading, mutate, onOpen: props.onOpenAnalysis, onRefresh: () => void loadLive(),
-        onSelectKline: (code, type) => setKlineTarget({ code, kind: inferKlineKind(code, type), at: Date.now() }),
+        onSelectKline: (code, type) => { setChartFromDossier(false); setKlineTarget(chartTargetFor({ code, type: type ?? 'stock' }, Date.now())) },
         klineTarget,
       }) : null,
       tab === 'holdings' ? h(HoldingsView, { data, quoteBy, mutate, onOpen: props.onOpenAnalysis, holdingDraft, onHoldingDraftChange: setHoldingDraft }) : null,
@@ -4238,12 +4256,15 @@ function PanelBody(props: {
         navigate: selectTab,
         onOpenPolicy: (id: string) => { setPolicyFocus(id); selectTab('policy') },
       }) : null,
+      tab === 'strategy' ? h('div', null,
+        h(PortfolioStrategy, { deliver: deliverToChat, get: apiGet, post: apiPost }),
+        h('details', { style: { marginTop: 16 } }, h('summary', null, '高级：单标的规则实验（不是组合策略）'), h(StrategyLab, { post: apiPost, deliver: deliverToChat }))) : null,
       tab === 'capital' ? h(CapitalWorkspace, { get: apiGet, deliver: deliverToChat, useBus, portfolio: portfolioSnapshot }) : null,
       tab === 'wealth' ? h('div', null,
         h(PersonalHome, { embedded: true, planningOnly: true, deliver: deliverToChat, navigate: selectTab, useBus }),
         h(WealthWorkspace, { get: apiGet, post: apiPost, portfolio: portfolioSnapshot })) : null,
       tab === 'dossier' ? h(SecurityWorkspace, {
-        key: `${dossierTarget?.type ?? (klineTarget?.kind === 'fund' ? 'fund' : 'stock')}:${dossierTarget?.code ?? klineTarget?.code ?? 'empty'}`,
+        key: `${dossierTarget?.type ?? (klineTarget?.kind === 'fund' ? 'fund' : 'stock')}:${dossierTarget?.market ?? ''}:${dossierTarget?.secid ?? ''}:${dossierTarget?.code ?? klineTarget?.code ?? 'empty'}`,
         get: apiGet, deliver: deliverToChat,
         historyKind: historyKindOf,
         initial: dossierTarget ? undefined : klineTarget?.code,
@@ -4251,7 +4272,7 @@ function PanelBody(props: {
         requested: dossierTarget ? { ...dossierTarget, type: dossierTarget.type ?? 'stock' } : undefined,
         onSelect: (item) => setDossierTarget({ ...item, at: Date.now() }),
         onBack: () => selectTab(securityReturnTab),
-        onChart: (item) => { if (!selectTab('quotes')) return; setChartFromDossier(true); setKlineTarget({ code: item.code, kind: inferKlineKind(item.code, item.type), at: Date.now() }) },
+        onChart: (item) => { if (!selectTab('quotes')) return; setChartFromDossier(true); setChartOrigin(item); setKlineTarget(chartTargetFor(item, Date.now())) },
       }) : null,
       tab === 'discover' ? h(DiscoverView, null) : null,
       tab === 'follow' ? h(FollowView, null) : null,

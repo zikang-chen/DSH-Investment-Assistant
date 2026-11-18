@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict'
+import {readFileSync} from 'node:fs'
+const entry=readFileSync('src/client/index.tsx','utf8')
+const ui=readFileSync('src/client/portfolio-strategy.tsx','utf8')
+assert.match(entry,/label: '组合策略'/)
+assert.match(entry,/h\(PortfolioStrategy/)
+assert.match(entry,/高级：单标的规则实验（不是组合策略）/)
+assert.match(ui,/onChangeCapture=\{\(\) => setResult\(undefined\)\}/)
+assert.match(ui,/portfolio_strategy_review/)
+for(const term of ['战略基线','换手预算','估值日期','当前现金','目标现金','等待确认']) assert.ok(ui.includes(term),term)
+assert.ok(!ui.includes('get_portfolio('),'no implicit personal read')
+const model=readFileSync('src/strategy/portfolio-policy.ts','utf8')
+assert.ok(!model.includes("from 'node:"),'browser import must stay node-free')
+const report=readFileSync('docs/portfolio-competitors.md','utf8')
+assert.ok(report.includes('未验证')&&report.includes('Portfolio Visualizer')&&report.includes('Composer'))
+console.log('PASS multi-position UI: primary workflow, single-stock demotion, stale result invalidation, explicit inputs, evidence/approval boundaries, browser-safe core, researched sources')

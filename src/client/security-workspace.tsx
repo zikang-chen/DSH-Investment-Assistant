@@ -4,7 +4,7 @@ import { KlineChart, type KlineMarker } from './kline-chart.js'
 import type { RawBar } from './kline-math.js'
 import { SecuritySearch } from './security-search.js'
 import { SECURITY_CSS } from './security-styles.js'
-import { dossierName, dossierRows, isGlobalSecurity, requestSecurityOpen, stockIdentityFromRow, type SecurityDossier, type SecurityIdentity, type SecuritySection } from './security-model.js'
+import { companyOverviewFields, dossierName, dossierRows, isGlobalSecurity, requestSecurityOpen, stockIdentityFromRow, type SecurityDossier, type SecurityIdentity, type SecuritySection } from './security-model.js'
 import { deliveryFeedback, type Deliver, type ReadApi } from './workbench-model.js'
 
 export function SecurityLink({ item, children }: { item: SecurityIdentity; children?: React.ReactNode }) {
@@ -12,6 +12,24 @@ export function SecurityLink({ item, children }: { item: SecurityIdentity; child
 }
 function FieldTable({ section }: { section: SecuritySection }) {
   const [limit, setLimit] = useState(12)
+  if (['overview', 'company_survey'].includes(section.key)) {
+    const fields = companyOverviewFields(section.data)
+    if (!fields.length) return null
+    const renderFields = (metadata: boolean) => {
+      const selected = fields.filter(field => field.metadata === metadata)
+      if (!selected.length) return null
+      return <table className="fia-table" style={{ width: '100%', maxWidth: '100%', tableLayout: 'fixed' }}>
+        <caption>{metadata ? '来源与口径（抓取时间不等于数据时点）' : `${section.key === 'company_survey' ? '公司概况' : '基本概况'} · 按来源字段展示，不推断缺失信息`}</caption>
+        <colgroup><col style={{ width: '32%' }} /><col style={{ width: '68%' }} /></colgroup>
+        <tbody>{selected.map(field => <tr key={field.key}>
+          <th scope="row" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', verticalAlign: 'top' }}>{field.label}</th>
+          <td style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', verticalAlign: 'top' }}>{/^https?:\/\/\S+$/i.test(field.value)
+            ? <a href={field.value} target="_blank" rel="noopener noreferrer">{field.value} ↗</a> : field.value}</td>
+        </tr>)}</tbody>
+      </table>
+    }
+    return <div className="fia-security-company-overview" style={{ minWidth: 0, maxWidth: '100%' }}>{renderFields(false)}{renderFields(true)}</div>
+  }
   const rows = dossierRows(section.data)
   const columns = [...new Set(rows.flatMap(row => Object.keys(row)))]
   if (!rows.length) return null
@@ -32,7 +50,9 @@ function DossierSection({ section }: { section: SecuritySection }) {
     <div className="fia-security-data-meta"><span>来源：{section.provider || '未返回来源标识'}</span><span>数据时点：{section.dataAsOf || '源未注明，不能当作实时数据'}</span></div>
     {section.error && <p className={status === 'error' ? 'fia-security-data-error' : 'fia-security-data-gap'}>{section.error}</p>}
     {section.missing?.length ? <p className="fia-security-data-gap">口径与缺失：{section.missing.join('；')}</p> : null}
-    <FieldTable section={section} />
+    {status === 'empty' || status === 'error' || status === 'unsupported'
+      ? <p className="fia-muted">{status === 'empty' ? '未取得有效业务数据；来源元信息不算公司资料。' : '本维度不可用，不用其他标的或示例数据补齐。'}</p>
+      : <FieldTable section={section} />}
   </details>
 }
 export function securityResearchPrompt(item: SecurityIdentity, portfolioAuthorized = false): string {
@@ -52,7 +72,7 @@ export function securityResearchPrompt(item: SecurityIdentity, portfolioAuthoriz
 function FundNavChart({ series, note }: { series: Array<{ date: string; nav: number | null }>; note: string }) {
   const points = series.filter(p => typeof p.nav === 'number' && Number.isFinite(p.nav)) as Array<{ date: string; nav: number }>
   if (!points.length) return <p className="fia-muted">{note || '暂无净值序列。'}</p>
-  const sample = points.length > 240 ? points.filter((_, i) => i % Math.ceil(points.length / 240) === 0) : points
+  const sample = points.length > 240 ? points.filter((_, i) => i % Math.ceil(points.length / 240) === 0 || i === points.length - 1) : points
   const values = sample.map(p => p.nav)
   const min = Math.min(...values), max = Math.max(...values)
   const span = max - min || 1
@@ -106,7 +126,7 @@ export function SecurityWorkspace(props: {
       try {
         const [q, k] = await Promise.all([
           props.get<{ ok?: boolean; quote?: { price?: number | null; change?: number | null; changePct?: number | null; asOf?: string; name?: string; source?: string }; error?: string }>(`/global/quote?secid=${encodeURIComponent(item.secid!)}`),
-          props.get<{ ok?: boolean; bars?: RawBar[]; error?: string }>(`/global/kline?secid=${encodeURIComponent(item.secid!)}&limit=180`),
+          props.get<{ ok?: boolean; bars?: RawBar[]; error?: string }>(`/global/kline?secid=${encodeURIComponent(item.secid!)}&limit=500`),
         ])
         if (sequence.current !== id) return
         if (q.ok === false) setError(q.error || '行情读取失败')
@@ -160,7 +180,7 @@ export function SecurityWorkspace(props: {
     <style>{SECURITY_CSS}</style>
     <PageHeader title="证券资料与综合研究" eyebrow="SECURITY DOSSIER" description="先选对股票或基金，再查看原始资料、K线与证据。AI判断和事实资料分开呈现。" actions={props.onBack && <Button onClick={props.onBack}>← 返回上一页</Button>} />
     <SecuritySearch get={props.get} onSelect={item => { if (props.onSelect) props.onSelect(item); else void load(item) }} />
-    {identity && <section className="fia-research-section"><div className="fia-security-header"><div><StatusBadge tone="neutral">{identity.type === 'fund' ? '基金' : '股票'}</StatusBadge><h2>{displayName}</h2><p>{identity.code} · {identity.type === 'fund' ? '净值日期以来源标注为准，非实时成交价' : isGlobalSecurity(identity) ? `${identity.market ?? '海外市场'} · 行情与K线按 secid 读取，可能延迟` : '公司财务与资金等数据按各自报告期展示'}</p><div className="fia-security-header-meta">{data ? <><span>档案抓取：{formatDate(data.at, { includeTime: true })}</span><span>可用 {data.ready} / {data.total} 个维度</span></> : isGlobalSecurity(identity) && globalQuote ? <><span>最新 {formatNumber(globalQuote.price ?? null, { decimals: 2 })}</span><span>{typeof globalQuote.changePct === 'number' ? `${globalQuote.changePct >= 0 ? '+' : ''}${globalQuote.changePct.toFixed(2)}%` : '涨跌幅缺失'}</span><span>{globalQuote.asOf ? `行情时间 ${globalQuote.asOf.slice(0, 16).replace('T', ' ')}` : '行情时间未知'}</span></> : <span>{busy ? '读取中…' : '未成功'}</span>}</div></div><div className="fia-security-actions">{!isGlobalSecurity(identity) && <Button onClick={() => props.onChart(identity)}>查看K线／净值走势</Button>}<Button variant="primary" disabled={sending} onClick={() => void send()}>{sending ? '正在投递…' : '让 Agent 综合分析'}</Button><Button variant="ghost" disabled={busy} onClick={() => void load(identity)}>刷新资料</Button></div></div><p className="fia-muted">分析会按需核查财报、新闻、国内外政策、资金与市场环境；默认不读取个人资产，不执行交易。</p><label className="fia-consent" style={{ marginTop: 8 }}><input type="checkbox" checked={includePortfolio} onChange={event => setIncludePortfolio(event.target.checked)} />本次分析允许使用我的相关持仓、成本与既往判断（默认关闭）</label>{feedback && <div className="fia-notice" role="status">{feedback}</div>}</section>}
+    {identity && <section className="fia-research-section"><div className="fia-security-header"><div><StatusBadge tone="neutral">{identity.type === 'fund' ? '基金' : '股票'}</StatusBadge><h2>{displayName}</h2><p>{identity.code} · {identity.type === 'fund' ? '净值日期以来源标注为准，非实时成交价' : isGlobalSecurity(identity) ? `${identity.market ?? '海外市场'} · 行情与K线按 secid 读取，可能延迟` : '公司财务与资金等数据按各自报告期展示'}</p><div className="fia-security-header-meta">{data ? <><span>档案抓取：{formatDate(data.at, { includeTime: true })}</span><span>可用 {data.ready} / {data.total} 个维度</span></> : isGlobalSecurity(identity) && globalQuote ? <><span>最新 {formatNumber(globalQuote.price ?? null, { decimals: 2 })}</span><span>{typeof globalQuote.changePct === 'number' ? `${globalQuote.changePct >= 0 ? '+' : ''}${globalQuote.changePct.toFixed(2)}%` : '涨跌幅缺失'}</span><span>{globalQuote.asOf ? `行情时间 ${globalQuote.asOf.slice(0, 16).replace('T', ' ')}` : '行情时间未知'}</span></> : <span>{busy ? '读取中…' : '未成功'}</span>}</div></div><div className="fia-security-actions"><Button onClick={() => props.onChart(identity)}>{identity.type === 'fund' ? '查看净值走势' : '打开K线工作区'}</Button><Button variant="primary" disabled={sending} onClick={() => void send()}>{sending ? '正在投递…' : '让 Agent 综合分析'}</Button><Button variant="ghost" disabled={busy} onClick={() => void load(identity)}>刷新资料</Button></div></div><p className="fia-muted">分析会按需核查财报、新闻、国内外政策、资金与市场环境；默认不读取个人资产，不执行交易。</p><label className="fia-consent" style={{ marginTop: 8 }}><input type="checkbox" checked={includePortfolio} onChange={event => setIncludePortfolio(event.target.checked)} />本次分析允许使用我的相关持仓、成本与既往判断（默认关闭）</label>{feedback && <div className="fia-notice" role="status">{feedback}</div>}</section>}
     {busy && <p role="status" className="fia-muted">正在并发读取各维度，失败项将单独标注，不会用演示数据填充。</p>}
     {error && <div role="alert" className="fia-notice fia-notice--error">{error}{identity && <Button onClick={() => void load(identity)}>重试</Button>}</div>}
     {!identity && <EmptyState title="用名称片段或代码查找" description="例如输入“中国”，从数据源返回的多个候选中选择准确的市场与代码。也可以从持仓、基金排行和自选名称点击进入。" />}
@@ -171,6 +191,6 @@ export function SecurityWorkspace(props: {
       </div>
       <p className="fia-muted">海外个股来自东方财富按 secid 的行情与日K，可能延迟；不含该市场的本地档案维度（财报/资金流等以该市场实际可得为准，缺失不补）。涨跌不构成买卖建议。</p>
     </div>}
-    {data && <><div className="fia-research-section"><h3>{identity?.type === 'fund' ? '净值走势' : '行情走势'}</h3>{identity?.type === 'fund' ? <FundNavChart series={navSeries} note={navNote} /> : historyNote ? <div className="fia-notice fia-notice--error" role="alert">本地历史读取失败：{historyNote}。这不等于“没有数据”，请检查代码与市场类型后重试。</div> : history.bars.length ? <KlineChart bars={history.bars} markers={history.events} title={`${displayName} · 本地历史K线`} height={280} /> : <p className="fia-muted">本地尚无已缓存的历史K线，不代表没有交易数据。点击“查看K线／净值走势”可进入完整行情工作区并同步。</p>}</div>{data.sections.map(section => <DossierSection section={section} key={`${data.snapshotId ?? data.at}-${section.key}`} />)}<p className="fia-muted">抓取时间不等于数据时点。资金流按数据源算法统计，不等于公司现金流；机构预期不等于公司承诺。年报PDF若尚未解析，需由Agent取得可核验原文后再引用。</p></>}
+    {data && <><div className="fia-research-section"><h3>{identity?.type === 'fund' ? '净值走势' : '行情走势'}</h3>{identity?.type === 'fund' ? <FundNavChart series={navSeries} note={navNote} /> : historyNote ? <div className="fia-notice fia-notice--error" role="alert">本地历史读取失败：{historyNote}。这不等于“没有数据”，请检查代码与市场类型后重试。</div> : history.bars.length ? <KlineChart bars={history.bars} markers={history.events} title={`${displayName} · 本地历史K线`} height={280} /> : <p className="fia-muted">本地尚无已缓存的历史K线，不代表没有交易数据。点击“打开K线工作区”可进入行情页的对应图表并同步；基金使用净值走势，不代表实时成交价。</p>}</div>{data.sections.map(section => <DossierSection section={section} key={`${data.snapshotId ?? data.at}-${section.key}`} />)}<p className="fia-muted">抓取时间不等于数据时点。资金流按数据源算法统计，不等于公司现金流；机构预期不等于公司承诺。年报PDF若尚未解析，需由Agent取得可核验原文后再引用。</p></>}
   </div>
 }

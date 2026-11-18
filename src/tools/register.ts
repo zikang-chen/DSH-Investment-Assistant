@@ -13,6 +13,11 @@ import { fetchAndBuildGlobalNewsRadar } from '../news/global-radar.js'
 import { fetchGlobalQuote, fetchGlobalKline } from '../data/global-quotes.js'
 import { listCnDatasets, fetchCnDataset, checkCnBridge } from '../data/cn-datasets.js'
 import { dossierToolResult } from './dossier-data.js'
+import { fetchStrategyExperiment } from '../strategy/lab-service.js'
+import { reviewStrategyEnvironment } from '../strategy/lab.js'
+import { evaluatePortfolioPolicy, type PortfolioPolicyInput } from '../strategy/portfolio-policy.js'
+import { verifyPortfolioData, type PortfolioVerificationInput } from '../strategy/portfolio-verification.js'
+import { runPortfolioBacktest } from '../strategy/portfolio-backtest.js'
 import {
   compareFunds,
   compareWithBenchmark,
@@ -31,7 +36,7 @@ import type { AssetType } from '../types.js'
 
 // 'kline'、'market' 为兼容别名（K线工作区与「市场」页均已并入 quotes「行情」，
 // 导航时等价 quotes；kline 另聚焦K线工作区，market 与 quotes 同页含板块热度）。
-const PANEL_TABS = ['home', 'quotes', 'market', 'holdings', 'funds', 'kline', 'macro', 'news', 'research', 'dossier', 'discover', 'policy', 'sources', 'skills', 'health', 'follow'] as const
+const PANEL_TABS = ['home', 'quotes', 'market', 'holdings', 'funds', 'kline', 'macro', 'news', 'research', 'dossier', 'discover', 'policy', 'sources', 'skills', 'health', 'follow', 'strategy', 'advice', 'journal', 'capital', 'wealth', 'learn', 'evidence'] as const
 
 function text(lines: string | string[]) {
   const body = Array.isArray(lines) ? lines.join('\n') : lines
@@ -1113,6 +1118,55 @@ export function registerTools(ctx: Context, finance: FinanceDataService, store: 
         refs: analysis.refs,
         note: '引用有效≠语义真实，结论需用户审阅。',
       })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'portfolio_strategy_review',
+    description: '多持仓组合策略检查：用户显式提供当前/目标权重、现金、单资产/类别/换手约束和市场国际事件证据；计算暴露/漂移/复核触发，生成受约束的权重预览。不自动改目标、不读取真实持仓、不交易。',
+    parameters: { input: { type: 'string', required: true, description: 'JSON组合政策输入：asOf/baseCurrency/positions/cashWeight/targetCashWeight/constraints/review/signals；权重0-1且含现金合计1' } },
+    output: jsonOut,
+    async execute(args) { try { return asJson(evaluatePortfolioPolicy(JSON.parse(String(args.input)) as PortfolioPolicyInput)) } catch(error) { return asJson({ok:false,error:error instanceof Error?error.message:String(error)}) } },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'portfolio_backtest_run',
+    description: '多资产纸面再平衡回测（离线确定性）：输入含来源的raw价格、权重、整手、费用/税表、分红/拆股公司行动与逐期汇率；输出逐日权益、模拟流水、收益/回撤/费用税费。缺税表或公司行动覆盖声明时只输出部分口径，不能称完整总回报。不写账本、不下单。',
+    parameters: { input: { type: 'string', required: true, description: 'JSON：baseCurrency/initialCash/cashTargetWeight/assets/fx/rebalance/start/end；每资产需adjustment=raw、tax、prices、actions' } },
+    output: jsonOut,
+    async execute(args) {
+      try { return asJson(runPortfolioBacktest(JSON.parse(String(args.input)))) }
+      catch (error) { return asJson({ ok: false, error: error instanceof Error ? error.message : String(error) }) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'portfolio_data_verify',
+    description: '组合数据核验（确定性）：用显式数量、价格与日期、FX、历史序列、基金披露权重，计算估值覆盖、含现金权重、币种与类别暴露、基金穿透已知/未知部分、同币种日收益协方差与相关系数。缺价格/汇率/披露时保留未知，不按0、不把已知部分归一化成全组合。不读真实资产、不联网。',
+    parameters: { input: { type: 'string', required: true, description: 'JSON：asOf/baseCurrency/positions/cash/fx/histories/fundHoldings；价格与汇率需带来源和日期' } },
+    output: jsonOut,
+    async execute(args) {
+      try { return asJson(verifyPortfolioData(JSON.parse(String(args.input)) as PortfolioVerificationInput)) }
+      catch (error) { return asJson({ ok: false, error: error instanceof Error ? error.message : String(error) }) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'strategy_experiment',
+    description: '策略实验室：读取普通A股主板未复权日线，校验数据后比较固定模板与留出段、双倍成本。仅价格纸面实验，不改账本/策略库、不交易；数据不足明确拒绝。',
+    parameters: { code: { type: 'string', required: true, description: '普通主板六位A股代码，首版不支持ST、基金或海外' }, initialCash: { type: 'number', description: '模拟本金CNY，默认100000，不是真实资金' } },
+    output: jsonOut,
+    async execute(args) { return asJson(await fetchStrategyExperiment(String(args.code ?? ''), args.initialCash === undefined ? 100000 : Number(args.initialCash))) },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'strategy_environment_review',
+    description: '按市场/国际形势证据复核策略适用条件：每条含topic/claim/source/asOf/direction(risk/support/neutral)。只输出复核与缺口，不自动改规则、不把当前新闻回填历史回测。',
+    parameters: { signals: { type: 'string', required: true, description: 'JSON证据数组，每条topic/claim/source/asOf/direction，须真实来源与日期' }, asOf: { type: 'string', required: true, description: '复核日期YYYY-MM-DD' } },
+    output: jsonOut,
+    async execute(args) {
+      try { const signals = JSON.parse(String(args.signals)); if (!Array.isArray(signals) || signals.length > 30) return asJson({ ok: false, error: '证据必须是最多30条的数组' }); return asJson(reviewStrategyEnvironment(signals, String(args.asOf))) }
+      catch (error) { return asJson({ ok: false, error: error instanceof Error ? error.message : String(error) }) }
     },
   }))
 

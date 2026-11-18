@@ -79,6 +79,12 @@ jobs:
         run: npm run test:history-sync && npm run test:policy-official
 
       # 离线、确定性的套件；依赖外部数据源或 POSIX 文件权限的套件不在此跑。
+      - name: Strategy laboratory and navigation
+        run: npm run test:strategy-lab && npm run test:product-navigation
+
+      - name: Portfolio policy, backtest, verification and versions
+        run: npm run test:portfolio
+
       - name: Policy
         run: npm run test:policy
 
