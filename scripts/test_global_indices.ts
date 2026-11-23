@@ -460,7 +460,7 @@ try {
 
   check('静态：provider 能力 global_indices 已登记且默认顺序唯一', () => {
     assert.ok(CAPABILITIES.includes('global_indices'))
-    assert.deepEqual(DEFAULT_PROVIDER_ORDER.global_indices, ['em_global_indices'])
+    assert.deepEqual(DEFAULT_PROVIDER_ORDER.global_indices, ['em_global_indices', 'sina_global_indices'])
     const provider = PROVIDERS.find((p) => p.id === 'em_global_indices')
     assert.ok(provider, '缺少 em_global_indices provider')
     assert.equal(provider.capability, 'global_indices')
@@ -469,6 +469,11 @@ try {
     assert.match(providersSource, /from '\.\/global-indices\.js'/)
     assert.match(providersSource, /capability: 'global_indices'/)
     assert.match(providersSource, /fetchGlobalIndices\(/)
+    // 东财 push2 会按 TLS 指纹重置 Node 连接，新浪作为第二来源兜底。
+    const fallback = PROVIDERS.find((p) => p.id === 'sina_global_indices')
+    assert.ok(fallback, '缺少 sina_global_indices 兜底源')
+    assert.equal(fallback!.capability, 'global_indices')
+    assert.match(providersSource, /fetchSinaGlobalIndices\(/)
   })
 
   check('静态：service 走 registry，HTTP 路由复用同一个 service 方法', () => {

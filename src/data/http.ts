@@ -10,6 +10,58 @@ export interface HttpGetOptions {
   encoding?: string
 }
 
+/**
+ * 瞬时网络故障重试一次：东财等源会周期性「重置连接」（ECONNRESET / UND_ERR_SOCKET），
+ * 隔几百毫秒再请求通常就正常。只重试网络层错误，不重试 HTTP 4xx/5xx，也不重试调用方取消。
+ */
+const RETRY_ATTEMPTS = 2
+const RETRY_DELAY_MS = 350
+
+function isTransientNetworkError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return false
+  const code = String((err as { cause?: { code?: string } } | null)?.cause?.code ?? '')
+  const message = err instanceof Error ? err.message : String(err)
+  return /UND_ERR_SOCKET|UND_ERR_CLOSED|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|socket hang up|other side closed/i.test(`${code} ${message}`)
+}
+
+async function withNetworkRetry<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await run()
+    } catch (err) {
+      lastError = err
+      if (attempt === RETRY_ATTEMPTS || !isTransientNetworkError(err, signal)) throw err
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+      if (signal?.aborted) throw signal.reason ?? new Error('aborted')
+    }
+  }
+  throw lastError
+}
+
+/** 一次请求：自带超时与调用方取消联动。 */
+async function fetchOnce(u: URL, options: HttpGetOptions, accept: string): Promise<Response> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(new Error(`http timeout ${options.timeoutMs}ms`)), options.timeoutMs)
+  const onAbort = () => ctrl.abort(options.signal?.reason ?? new Error('aborted'))
+  options.signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    return await fetch(u, {
+      method: 'GET',
+      signal: ctrl.signal,
+      headers: {
+        'User-Agent': DEFAULT_UA,
+        Accept: accept,
+        ...(options.referer ? { Referer: options.referer } : {}),
+        ...options.headers,
+      },
+    })
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', onAbort)
+  }
+}
+
 export async function httpGetJson<T = unknown>(
   url: string,
   params: Record<string, string | number | undefined>,
@@ -21,31 +73,11 @@ export async function httpGetJson<T = unknown>(
     if (v === undefined) continue
     u.searchParams.set(k, String(v))
   }
-
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(new Error(`http timeout ${options.timeoutMs}ms`)), options.timeoutMs)
-  const onAbort = () => ctrl.abort(options.signal?.reason ?? new Error('aborted'))
-  options.signal?.addEventListener('abort', onAbort, { once: true })
-
-  try {
-    const res = await fetch(u, {
-      method: 'GET',
-      signal: ctrl.signal,
-      headers: {
-        'User-Agent': DEFAULT_UA,
-        Accept: 'application/json,text/plain,*/*',
-        ...(options.referer ? { Referer: options.referer } : {}),
-        ...options.headers,
-      },
-    })
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} ${res.statusText} for ${u.hostname}`)
-    }
+  return withNetworkRetry(async () => {
+    const res = await fetchOnce(u, options, 'application/json,text/plain,*/*')
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} for ${u.hostname}`)
     return (await res.json()) as T
-  } finally {
-    clearTimeout(timer)
-    options.signal?.removeEventListener('abort', onAbort)
-  }
+  }, options.signal)
 }
 
 export async function httpGetText(
@@ -59,29 +91,14 @@ export async function httpGetText(
     if (v === undefined) continue
     u.searchParams.set(k, String(v))
   }
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(new Error(`http timeout ${options.timeoutMs}ms`)), options.timeoutMs)
-  const onAbort = () => ctrl.abort(options.signal?.reason ?? new Error('aborted'))
-  options.signal?.addEventListener('abort', onAbort, { once: true })
-  try {
-    const res = await fetch(u, {
-      method: 'GET',
-      signal: ctrl.signal,
-      headers: {
-        'User-Agent': DEFAULT_UA,
-        ...(options.referer ? { Referer: options.referer } : {}),
-        ...options.headers,
-      },
-    })
+  return withNetworkRetry(async () => {
+    const res = await fetchOnce(u, options, '*/*')
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
     if (options.encoding && options.encoding.toLowerCase() !== 'utf-8') {
       return new TextDecoder(options.encoding).decode(await res.arrayBuffer())
     }
     return await res.text()
-  } finally {
-    clearTimeout(timer)
-    options.signal?.removeEventListener('abort', onAbort)
-  }
+  }, options.signal)
 }
 
 export function marketCode(symbol: string): 0 | 1 {

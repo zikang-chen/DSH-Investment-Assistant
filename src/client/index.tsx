@@ -11,6 +11,7 @@ import { StrategyLab } from './strategy-lab.js'
 import { PortfolioStrategy } from './portfolio-strategy.js'
 import { CnDatasetsPanel } from './cn-datasets-panel.js'
 import { KlineChart } from './kline-chart.js'
+import { IntradayChart } from './intraday-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
 import { CapitalWorkspace, WealthWorkspace } from './capital-workspace.js'
 import { HoldingEntry } from './holding-entry.js'
@@ -1908,6 +1909,28 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
   const requestSeq = useRef(0)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  /** 走势面板的展示模式：日K（本地历史）或分时 1 日 / 5 日。 */
+  const [view, setView] = useState<'kline' | 'intraday1' | 'intraday5'>('kline')
+  const [intraday, setIntraday] = useState<{ points: Array<{ time: string; price: number | null; avgPrice: number | null; volume: number | null }>; preClose: number | null; name?: string } | null>(null)
+  const [intradayError, setIntradayError] = useState('')
+  const intradaySeq = useRef(0)
+  /** 供异步回调读取当前模式（避免闭包拿到旧值）。 */
+  const viewRef = useRef(view)
+  useEffect(() => { viewRef.current = view }, [view])
+  const loadIntraday = async (c: string, k: string, days: number) => {
+    if (!c) return
+    // 基金只有 T+1 净值，没有分时成交价：直接说明，不去请求。
+    if (k === 'fund') { setIntraday(null); setIntradayError('基金是每日净值（T+1），没有分时成交价；请看净值走势。'); return }
+    const seq = ++intradaySeq.current
+    setIntradayError(''); setIntraday(null)
+    try {
+      const r = await apiGet<{ ok: boolean; points?: Array<{ time: string; price: number | null; avgPrice: number | null; volume: number | null }>; preClose?: number | null; name?: string; error?: string }>(
+        `/intraday?code=${encodeURIComponent(c)}&kind=${encodeURIComponent(k)}&days=${days}`)
+      if (intradaySeq.current !== seq) return
+      if (!r.ok || !r.points?.length) { setIntradayError(r.error ?? '分时未返回数据'); return }
+      setIntraday({ points: r.points, preClose: r.preClose ?? null, ...(r.name ? { name: r.name } : {}) })
+    } catch (err) { if (intradaySeq.current === seq) setIntradayError(errText(err)) }
+  }
   const picks = [...props.data.holdings, ...props.data.watchlist].slice(0, 8)
   const autoSynced = useRef(new Set<string>())
   const lastSyncAt = useRef(new Map<string, number>())
@@ -1930,6 +1953,8 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
       const bars = r.ok ? r.kline ?? [] : []
       setHist({ kline: bars, events: r.events ?? [], updatedAt: r.updatedAt })
       setLoaded({ code: c, kind: k })
+      // 处于分时模式时，换标的要一起换分时数据。
+      if (viewRef.current !== 'kline') void loadIntraday(c, k, viewRef.current === 'intraday5' ? 5 : 1)
       // 本地无该标的历史时自动补一次（每个代码只自动重试一次，避免反复打上游）。
       const sig = `${k}:${c}`
       if (r.ok && bars.length === 0 && !autoSynced.current.has(sig)) {
@@ -1977,6 +2002,8 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
   useEffect(() => {
     if (!loaded) return
     const timer = setInterval(() => {
+      // 分时页：直接重取分钟数据（源侧按日聚合，重复请求成本低）。
+      if (viewRef.current !== 'kline') { void loadIntraday(loaded.code, loaded.kind, viewRef.current === 'intraday5' ? 5 : 1); return }
       const newest = hist?.kline?.length ? String(hist.kline[hist.kline.length - 1]!.date).slice(0, 10) : ''
       void refreshIfStale(loaded.code, loaded.kind, newest)
     }, 90_000)
@@ -2048,10 +2075,35 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
       ? h('div', { style: S.group },
         h('div', { style: S.groupHead },
           h('div', { style: { ...S.title, marginBottom: 0 } }, loaded ? `${loaded.code} · ${({ a: 'A股', hk: '港股', us: '美股', fund: '基金' } as Record<string, string>)[loaded.kind] ?? loaded.kind}走势` : '走势'),
-          h('span', { style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, `${hist.kline.length} 根`)),
+          h('div', { style: { marginLeft: 'auto', display: 'flex', gap: 4 } },
+            ([['kline', '日K'], ['intraday1', '分时'], ['intraday5', '5日分时']] as const).map(([mode, label]) => h('button', {
+              key: mode, type: 'button',
+              'aria-pressed': view === mode,
+              style: {
+                ...S.btn, padding: '2px 9px', fontSize: 11, borderRadius: 999,
+                border: `1px solid ${view === mode ? BRAND : R.line}`,
+                background: view === mode ? BRAND_SOFT : S.btn.background,
+                color: view === mode ? BRAND : S.btn.color,
+              },
+              onClick: () => {
+                setView(mode)
+                if (mode !== 'kline' && loaded) void loadIntraday(loaded.code, loaded.kind, mode === 'intraday5' ? 5 : 1)
+              },
+            }, label)))),
         h('div', { style: { padding: 9, display: 'flex', flexDirection: 'column', gap: 8 } },
-          h(KlineChart, { bars: hist.kline, markers: hist.events, title: loaded ? `${loaded.code} K线` : 'K线' }),
-          h(KlineStats, { kline: hist.kline })))
+          view === 'kline'
+            ? h(KlineChart, { bars: hist.kline, markers: hist.events, title: loaded ? `${loaded.code} K线` : 'K线' })
+            : intradayError
+              ? h('div', { role: 'alert', style: { ...S.muted, fontSize: 12, color: DANGER, lineHeight: 1.7 } },
+                `分时读取失败：${intradayError}`,
+                h('div', { style: { marginTop: 6 } }, h('button', { style: S.btn, onClick: () => loaded && void loadIntraday(loaded.code, loaded.kind, view === 'intraday5' ? 5 : 1) }, '重试')))
+              : intraday
+                ? h(IntradayChart, {
+                  points: intraday.points, preClose: intraday.preClose, height: 300,
+                  title: `${intraday.name || (loaded?.code ?? '')} · ${view === 'intraday5' ? '5日分时' : '分时'}`,
+                })
+                : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 160 }), h(Skeleton, { w: '60%', h: 12 })),
+          view === 'kline' ? h(KlineStats, { kline: hist.kline }) : null))
       : h('div', { style: S.group },
         h('div', { style: S.groupHead }, h('div', { style: { ...S.title, marginBottom: 0 } }, 'K线与事件')),
         h('div', { style: { padding: 9 } },

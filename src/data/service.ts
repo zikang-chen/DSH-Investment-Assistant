@@ -185,6 +185,11 @@ export class FinanceDataService {
     return this.registry.call('indices', {}, signal)
   }
 
+  /** 分时：当日或近 5 日分钟级价格（A/H/美股）。返回 registry 结果，序列在 `data`。 */
+  async getIntraday(code: string, kind: 'a' | 'hk' | 'us' = 'a', days = 1, signal?: AbortSignal) {
+    return this.registry.call<import('./intraday.js').IntradaySeries>('intraday', { code, kind, days }, signal)
+  }
+
   /**
    * 全球主要指数：默认美国，region=us/asia/europe/china/all。
    * 走 provider 能力 global_indices（东财 push2）；顶层 at 是抓取时间，行内 asOf 是

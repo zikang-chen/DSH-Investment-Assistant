@@ -105,3 +105,30 @@
 - **两个真实不可用点**：VIX（无 secid）、美股 SEC 财务（缺 UA）。前者需换源，后者只需配置环境变量。
 - **大量「只是没跑过」**：F10 七维、资金流/两融/大宗、快讯/研报/搜索、政策国内非统计局源、政策国际源、新闻媒体源——这些属于「未测试」，不能计入通过。
 - **纠偏**：WeStock CLI 在 Windows 本机**可执行**、原油 secid **可用**，两者不应被列为不可用。
+
+---
+
+## 六、2026-11-23 补充：东财连接被重置与两个兜底源
+
+现象：面板报 `all providers failed for global_indices`。逐层实测后的结论如下（均为本机复现，不是推断）：
+
+| 层 | 实测结果 |
+| --- | --- |
+| `curl` 请求 `push2.eastmoney.com` | 200，HTTP/1.1 |
+| Node `fetch` / `https.request` 同 URL | `ECONNRESET` / `UND_ERR_SOCKET`，换 UA、Referer、`Connection: close` 均无效 |
+| Node 裸 TLS 握手 | 正常（TLS 1.2 / 1.3 都可） |
+| `push2his.eastmoney.com`（历史与分时） | 时通时断：同一分钟内 curl 200、下一次连接被对端 `close_notify` 中断 |
+
+结论：**不是代码 bug，是东财按客户端 TLS 指纹与请求频率做限制**；表现就是间歇性「连接被重置」，用户侧看到「所有来源都失败」。
+
+应对（已落地）：
+
+1. **HTTP 层对瞬时网络错误重试一次**（`UND_ERR_SOCKET` / `ECONNRESET` / `ECONNABORTED` 等，间隔 350ms，不重试 4xx/5xx 与用户取消）——`src/data/http.ts`。
+2. **全球指数新增新浪兜底源**（`sina_global_indices`，顺序：东财 → 新浪）。一次请求取 24 个品种，实测 23 个有价；美债 10Y 新浪无 symbol，用东财日线补，并把该行来源标为 `eastmoney-push2his-daily`。
+3. **分时新增腾讯兜底源**（`tx_intraday`，顺序：东财 → 腾讯）。腾讯只有当日、无美股分钟，遇到 5 日或美股请求会显式报错，不返回残缺曲线。
+
+仍未解决的部分（不隐瞒）：
+
+- 美债 10Y 依赖东财日线；东财被限流时该行显示错误，不会用旧值填充。
+- 新浪 `znb_SPTSX` 只有价格与涨跌，没有行情时间，该行 `asOf` 为 null。
+- 上述兜底只覆盖"能不能看到数"，不改变各源自身的延迟与口径差异。

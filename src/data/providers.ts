@@ -44,6 +44,8 @@ import {
   type GlobalFinancialsResult,
 } from './global-financials.js'
 import { fetchGlobalIndices } from './global-indices.js'
+import { fetchSinaGlobalIndices } from './sina-global-indices.js'
+import { fetchIntraday, fetchTxIntraday } from './intraday.js'
 import { normalizeFundHoldingRows, type NormalizedHolding } from '../fund-analysis.js'
 import {
   GLOBAL_MACRO_DEFAULT_POINTS,
@@ -258,6 +260,26 @@ async function emKlineBySecid(secid: string, args: Record<string, unknown>, ctx:
   })
 }
 
+/** 分时：当日或近 5 日分钟级价格。A/H/美股各用对应 secid 前缀。 */
+async function emIntraday(args: Record<string, unknown>, ctx: ProviderContext) {
+  const kindRaw = String(args.kind ?? 'a')
+  const kind = kindRaw === 'hk' || kindRaw === 'us' ? kindRaw : 'a'
+  const series = await fetchIntraday(String(args.code ?? '600519'), kind, Number(args.days ?? 1), {
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+  })
+  return { data: series, rows: series.points, sampleKeys: ['code', 'name', 'preClose', 'points', 'source'] }
+}
+
+/** 分时备用源：腾讯分钟接口（只有当日，5 日会显式拒绝）。 */
+async function txIntraday(args: Record<string, unknown>, ctx: ProviderContext) {
+  const kindRaw = String(args.kind ?? 'a')
+  const kind = kindRaw === 'hk' || kindRaw === 'us' ? kindRaw : 'a'
+  const series = await fetchTxIntraday(String(args.code ?? '600519'), kind, Number(args.days ?? 1), {
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+  })
+  return { data: series, rows: series.points, sampleKeys: ['code', 'preClose', 'points', 'source'] }
+}
+
 async function emKline(args: Record<string, unknown>, ctx: ProviderContext) {
   const raw = String(args.code ?? '600519')
   const code = normalizeCode(raw)
@@ -341,6 +363,29 @@ async function emIndexMain(_args: Record<string, unknown>, ctx: ProviderContext)
  * 小并发与行级容错都在 global-indices.ts（可注入 fetchJson 离线测试）。
  * 整体全部失败时抛错交给 registry 记录/回退；单行失败保留在该行 error 里。
  */
+/**
+ * 全球指数备用源：新浪文本行情。东财 push2 会按 TLS 指纹重置 Node 连接，
+ * 这里用一条请求取全部品种，逐行容错。
+ */
+async function sinaGlobalIndices(args: Record<string, unknown>, ctx: ProviderContext) {
+  const region = String(args.region ?? 'us')
+  if (!['us', 'asia', 'europe', 'china', 'commodities', 'all'].includes(region)) {
+    throw new Error(`未知区域：${region}`)
+  }
+  const { rows, failed } = await fetchSinaGlobalIndices(region as never, { ...(ctx.signal ? { signal: ctx.signal } : {}) })
+  const report = {
+    ok: rows.some((row) => row.price !== null),
+    at: new Date().toISOString(),
+    region,
+    rows,
+    cacheHits: 0,
+    failed,
+    provider: 'sina_global_indices',
+  }
+  if (!report.ok) throw new Error('新浪全球指数全部为空')
+  return { data: report, rows: report.rows, sampleKeys: ['ok', 'at', 'region', 'rows', 'failed'] }
+}
+
 async function emGlobalIndices(args: Record<string, unknown>, ctx: ProviderContext) {
   const report = await fetchGlobalIndices({
     region: args.region ?? 'us',
@@ -1785,11 +1830,32 @@ export const PROVIDERS: ProviderMeta[] = [
     call: emIndexMain,
   },
   {
+    id: 'em_intraday',
+    capability: 'intraday',
+    endpointRef: 'eastmoney push2his trends2（secid 1./0./116./105.；字段 f51 时间、f53 收盘、f58 均价）',
+    sampleArgs: { code: '600519', kind: 'a', days: 1 },
+    call: emIntraday,
+  },
+  {
+    id: 'tx_intraday',
+    capability: 'intraday',
+    endpointRef: 'tencent web.ifzq.gtimg.cn appstock/app/minute/query（仅当日；累计量差分得分钟量，均价=累计额/累计量）',
+    sampleArgs: { code: '600519', kind: 'a', days: 1 },
+    call: txIntraday,
+  },
+  {
     id: 'em_global_indices',
     capability: 'global_indices',
     endpointRef: 'eastmoney push2 qt/stock/get（全球指数 secid：100.SPX/100.HSI/1.000001…；f43 点位、f170 涨跌幅、f86 行情时间戳）',
     sampleArgs: { region: 'us' },
     call: emGlobalIndices,
+  },
+  {
+    id: 'sina_global_indices',
+    capability: 'global_indices',
+    endpointRef: 'sina hq.sinajs.cn（int_/znb_/rt_hk/hf_/DINIW；GBK 文本，一次请求取全部品种）',
+    sampleArgs: { region: 'us' },
+    call: sinaGlobalIndices,
   },
   {
     id: 'em_main_finadata',

@@ -5,6 +5,8 @@ export type Capability =
   /** 批量行情：一次调用拿多个标的（WeStock `quote a,b,c`），面板首屏与组合分析用。 */
   | 'quotes_batch'
   | 'kline'
+  /** 分时（当日/近 5 日分钟级价格，东财 trends2）。 */
+  | 'intraday'
   | 'indices'
   /** 全球主要指数（东财 push2；区域 us/asia/europe/china）。 */
   | 'global_indices'
@@ -130,6 +132,7 @@ export const CAPABILITIES: Capability[] = [
   'quote',
   'quotes_batch',
   'kline',
+  'intraday',
   'indices',
   'global_indices',
   'financials',
@@ -229,10 +232,12 @@ export const DEFAULT_PROVIDER_ORDER: Record<Capability, string[]> = {
   // 批量行情（面板首屏/组合分析）：一次 CLI 调用拿多只标的，失败再逐只回落。
   quotes_batch: ['ws_quotes_batch'],
   kline: ['ws_kline', 'em_kline', 'tx_kline'],
+  // 分时：东财 trends2（支持 5 日）为主，腾讯分钟接口（仅当日）为兜底。
+  intraday: ['em_intraday', 'tx_intraday'],
   // 指数同样走 WeStock（`westock quote sh000001,sz399001,…`），东财作为回落。
   indices: ['ws_indices', 'em_index_main'],
   // 全球指数：东财 push2 qt/stock/get 单一来源（一个 secid 一个请求，行级容错）。
-  global_indices: ['em_global_indices'],
+  global_indices: ['em_global_indices', 'sina_global_indices'],
   financials: ['em_main_finadata', 'ws_financials'],
   // 东财板块榜保持首选（面板列格式依赖它）；WeStock 板块榜作为回落源。
   sectors: ['em_industry_board', 'ws_sector_ranking'],

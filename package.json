@@ -71,7 +71,8 @@
     "test:investment": "tsx scripts/test_investment.ts",
     "test:learn": "tsx scripts/test_learn.ts",
     "demo:seed": "tsx scripts/seed_demo.ts",
-    "docs:images": "node tools/demo/render.mjs && node tools/demo/record.mjs"
+    "docs:images": "node tools/demo/render.mjs && node tools/demo/record.mjs",
+    "test:intraday": "tsx scripts/test_intraday.ts && tsx scripts/test_sina_global_indices.ts"
   },
   "dsh": {
     "bundle": {

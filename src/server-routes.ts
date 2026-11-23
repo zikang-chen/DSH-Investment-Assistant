@@ -986,6 +986,30 @@ export function registerRoutes(
             return sendJson(res, 400, { ok: false, code, error: err instanceof Error ? err.message : String(err) })
           }
         }
+        if (req.method === 'GET' && sub === '/intraday') {
+          // 分时：当日 / 近 5 日分钟级价格。kind 决定东财 secid 前缀（a/hk/us）。
+          const code = validateCode(url.searchParams.get('code') ?? '')
+          const kindParam = (url.searchParams.get('kind') ?? 'a').toLowerCase()
+          if (!['a', 'hk', 'us'].includes(kindParam)) {
+            return sendJson(res, 400, { ok: false, code, error: 'kind 必须是 a / hk / us' })
+          }
+          const days = Number(url.searchParams.get('days') ?? '1')
+          if (!Number.isFinite(days) || days < 1 || days > 5) {
+            return sendJson(res, 400, { ok: false, code, error: 'days 只支持 1–5' })
+          }
+          try {
+            const result = await finance.getIntraday(code, kindParam as 'a' | 'hk' | 'us', Math.floor(days))
+            if (!result.ok || !result.data) {
+              // 分时失败要说清是哪个源失败、失败原因，不能返回空点集当成功。
+              const reason = result.error ?? '分时不可用'
+              const attempts = result.attempts?.map((a) => `${a.provider}: ${a.error}`).join('; ')
+              return sendJson(res, 502, { ok: false, code, error: attempts ? `${reason}（${attempts}）` : reason })
+            }
+            return sendJson(res, 200, { ...result.data, ok: true, ...(result.provider ? { provider: result.provider } : {}) })
+          } catch (err) {
+            return sendJson(res, 502, { ok: false, code, error: err instanceof Error ? err.message : String(err) })
+          }
+        }
         if (history && req.method === 'GET' && sub === '/history/manifest') {
           const code = validateCode(url.searchParams.get('code') ?? '')
           const kindParam = url.searchParams.get('kind')
