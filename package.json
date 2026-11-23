@@ -72,8 +72,9 @@
     "test:learn": "tsx scripts/test_learn.ts",
     "demo:seed": "tsx scripts/seed_demo.ts",
     "docs:images": "node tools/demo/render.mjs && node tools/demo/record.mjs",
-    "test:intraday": "tsx scripts/test_intraday.ts && tsx scripts/test_sina_global_indices.ts",
-    "test:global-kline": "tsx scripts/test_global_kline_fallback.ts"
+    "test:intraday": "tsx scripts/test_intraday.ts && tsx scripts/test_intraday_integrity.ts && tsx scripts/test_intraday_math.ts && tsx scripts/test_sina_global_indices.ts",
+    "test:global-kline": "tsx scripts/test_global_kline_fallback.ts",
+    "test:market-integrity": "tsx scripts/test_market_integrity.ts && tsx scripts/test_global_kline_fallback.ts"
   },
   "dsh": {
     "bundle": {

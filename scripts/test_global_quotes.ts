@@ -55,9 +55,9 @@ test('kline parser: ordered bars, zero/negative close dropped, missing volume no
   ] } }
   const res = parseGlobalKline('105.NVDA', payload)
   assert.equal(res.ok, true)
-  assert.equal(res.bars.length, 3)
-  assert.deepEqual(res.bars.map(b => b.date), ['2026-11-13', '2026-11-16', '2026-11-18'])
-  assert.equal(res.bars[2]!.volume, 0)
+  assert.equal(res.bars.length, 2)
+  assert.deepEqual(res.bars.map(b => b.date), ['2026-11-13', '2026-11-16'])
+  assert.equal(res.bars[1]!.volume, 900000)
   assert.equal(parseGlobalKline('100.SPX', { data: null }).ok, false)
   assert.equal(parseGlobalKline('100.SPX', { data: { klines: [] } }).bars.length, 0)
 })

@@ -42,7 +42,7 @@ npm run demo:seed      # data-demo/：示例账户、5 笔流水、2 条建议�
 
 ## 功能
 
-- A 股 / 港股 / 美股行情、日 K、分时（当日 / 近 5 日）、财务、资金流、公告、股东、分红
+- A 股 / 港股 / 美股行情、日 K、分时（当日 / 近 5 日，与日线同一套画法）、财务、资金流、公告、股东、分红
 - 基金净值、经理、规模、重仓、同类排名，多基金阶段收益与相关性对比
 - 政策原文采集与入库：段落级引用、版本对比、传导链、执行进度跟踪
 - 宏观数据：统计局、人民银行、财政部，以及 OECD / Eurostat / ECB 等海外序列
@@ -117,7 +117,8 @@ npm run test:capital         # 21
 npm run test:wealth          # 19
 npm run test:learn           # 14
 npm run test:evidence        # 13
-npm run test:intraday        # 分时 + 全球指数兜底
+npm run test:intraday        # 分时 4 套 + 全球指数兜底
+npm run test:market-integrity # 行情身份/时效/超时与取消
 npm run test:portfolio       # 组合策略 6 套
 npm run test:regressions     # 19 组
 npm run test:quant           # 28

@@ -1,8 +1,7 @@
 /**
  * 全球指数备用源：新浪 hq.sinajs.cn。
  *
- * 为什么需要它：东财 push2 会按 TLS 指纹重置非浏览器客户端的连接（curl 能过、Node 过不去），
- * 而 push2his 正常。这里改用新浪文本接口，Node 可稳定访问。
+ * 为什么需要它：东财连接会间歇性重置，具体成因未确认；这里提供独立备用来源。
  *
  * 口径与边界：
  * - 一次请求取全部 symbol（GBK 编码），逐行解析；某行缺失只影响该行，不补 0。
@@ -26,13 +25,13 @@ export const SINA_GLOBAL_REFERER = 'https://finance.sina.com.cn/'
 
 /** secid → 新浪 symbol。没有映射的品种会返回带 error 的行。 */
 export const SINA_SYMBOL_BY_SECID: Readonly<Record<string, string>> = {
-  '100.DJIA': 'int_dji',
-  '100.NDX': 'int_nasdaq',
-  '100.SPX': 'int_sp500',
+  '100.DJIA': 'gb_$dji',
+  '100.NDX': 'gb_$ixic',
+  '100.SPX': 'gb_$inx',
   '100.TSX': 'znb_SPTSX',
-  '100.HSI': 'int_hangseng',
+  '100.HSI': 'rt_hkHSI',
   '124.HSTECH': 'rt_hkHSTECH',
-  '100.N225': 'int_nikkei',
+  '100.N225': 'znb_NKY',
   '100.KS11': 'znb_KOSPI',
   '100.SENSEX': 'znb_SENSEX',
   '100.AS51': 'znb_AS51',
@@ -45,7 +44,7 @@ export const SINA_SYMBOL_BY_SECID: Readonly<Record<string, string>> = {
   '0.399006': 'sz399006',
   '101.GC00Y': 'hf_GC',
   '101.SI00Y': 'hf_SI',
-  '101.HG00Y': 'hf_CAD',
+  // hf_CAD 是伦铜，不是 COMEX 铜。未核准单位/合约前不映射。
   '102.CL00Y': 'hf_CL',
   '112.B00Y': 'hf_OIL',
   '100.UDI': 'DINIW',
@@ -94,7 +93,14 @@ export function parseSinaQuote(symbol: string, fields: string[]): {
 } | null {
   if (!fields.length) return null
 
-  // int_*：名称,现价,涨跌额,涨跌幅%
+  // gb_* 的 [3] 为新浪显示时间（北京时间），[25]另含美国本地时区文本。
+  if (symbol.startsWith('gb_')) {
+    const match = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/.exec(fields[3] ?? '')
+    const asOf = match ? new Date(`${match[1]}T${match[2]}+08:00`).toISOString() : null
+    return { name: fields[0], price: num(fields[1]), changePct: num(fields[2]), change: num(fields[4]), asOf }
+  }
+
+  // int_* 旧接口没有行情时间；保留纯解析，但 build 不把它当成可用当前行情。
   if (symbol.startsWith('int_')) {
     return { name: fields[0], price: num(fields[1]), change: num(fields[2]), changePct: num(fields[3]), asOf: null }
   }
@@ -148,8 +154,10 @@ export function parseSinaQuote(symbol: string, fields: string[]): {
   if (symbol.startsWith('znb_')) {
     const date = fields[6] ?? ''
     const time = fields[7] ?? ''
+    const stamp = num(fields[5])
     const asOf = /^\d{4}-\d{2}-\d{2}$/.test(date) && /^\d{2}:\d{2}:\d{2}$/.test(time)
-      ? new Date(`${date}T${time}+08:00`).toISOString() : null
+      ? new Date(`${date}T${time}+08:00`).toISOString()
+      : stamp !== null && stamp > 0 ? new Date(stamp * 1000).toISOString() : null
     return { name: fields[0], price: num(fields[1]), change: num(fields[2]), changePct: num(fields[3]), asOf }
   }
 
@@ -177,6 +185,14 @@ export function buildSinaGlobalRows(text: string, defs: readonly GlobalIndexDef[
       rows.push({ secid: def.secid, code: def.code, name: def.name, region: def.region, price: null, changePct: null, change: null, asOf: null, source: SINA_GLOBAL_SOURCE, error: `新浪 ${symbol} 未返回价格` })
       continue
     }
+    const age = parsed.asOf ? Date.parse(at) - Date.parse(parsed.asOf) : NaN
+    if (!Number.isFinite(age) || age > 7 * 86400_000 || age < -86400_000) {
+      failed++
+      rows.push({ secid: def.secid, code: def.code, name: def.name, region: def.region,
+        price: null, changePct: null, change: null, asOf: parsed.asOf, source: SINA_GLOBAL_SOURCE,
+        error: parsed.asOf ? `备用源行情过期（${parsed.asOf}）` : '备用源未提供可核验的行情时间' })
+      continue
+    }
     rows.push({
       secid: def.secid,
       code: def.code,
@@ -187,9 +203,9 @@ export function buildSinaGlobalRows(text: string, defs: readonly GlobalIndexDef[
       change: parsed.change,
       asOf: parsed.asOf,
       source: SINA_GLOBAL_SOURCE,
+      ...(parsed.derivedFrom ? { derivedFrom: parsed.derivedFrom } : {}),
     })
   }
-  void at
   return { rows, failed }
 }
 

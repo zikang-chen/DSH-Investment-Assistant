@@ -11,6 +11,8 @@
  * by 100 again. Missing fields stay null; zero remains zero.
  */
 
+import { httpGetJson } from './http.js'
+
 export const GLOBAL_QUOTE_TIMEOUT_MS = 12_000
 export const GLOBAL_QUOTE_CACHE_TTL_MS = 30_000
 export const GLOBAL_KLINE_MAX_BARS = 500
@@ -82,6 +84,9 @@ export function parseGlobalQuote(secid: string, payload: unknown): GlobalQuoteRe
   const data = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).data : undefined
   if (!data || typeof data !== 'object') return { ok: false, secid, error: '行情源返回空数据（可能是暂停交易或代码不存在）' }
   const d = data as Record<string, unknown>
+  const [market, requestedCode] = secid.split('.')
+  if ((str(d.f57) && String(d.f57).toUpperCase() !== requestedCode!.toUpperCase()) ||
+      (d.f107 !== undefined && String(d.f107) !== market)) return { ok: false, secid, error: '行情响应品种与请求不一致' }
   const price = num(d.f43)
   // A quote with no price at all is not "zero"; treat as missing.
   if (price === null) return { ok: false, secid, error: '行情源未返回最新价' }
@@ -103,7 +108,7 @@ export function parseGlobalQuote(secid: string, payload: unknown): GlobalQuoteRe
 }
 
 export function globalQuoteUrl(secid: string): string {
-  const fields = 'f43,f44,f45,f46,f57,f58,f60,f86,f169,f170'
+  const fields = 'f43,f44,f45,f46,f57,f58,f60,f86,f107,f169,f170'
   return `https://push2.eastmoney.com/api/qt/stock/get?secid=${encodeURIComponent(secid)}&fltt=2&invt=2&fields=${fields}`
 }
 
@@ -148,7 +153,10 @@ export function tencentKlineUrl(symbol: string, limit: number): string {
  */
 export function parseTencentGlobalKline(secid: string, payload: unknown): GlobalKlineResult {
   const data = (payload as { data?: Record<string, { day?: unknown[][]; qt?: Record<string, string[]> }> } | null)?.data
-  const key = data ? Object.keys(data)[0] : undefined
+  const symbol = TX_GLOBAL_KLINE_SYMBOL[secid]
+  const alias = symbol?.startsWith('us') ? 'us.' + symbol.slice(2) : symbol
+  const key = symbol && data && Object.hasOwn(data, symbol) ? symbol
+    : alias && data && Object.hasOwn(data, alias) ? alias : undefined
   const node = key ? data![key] : undefined
   const rows = node?.day
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -156,17 +164,12 @@ export function parseTencentGlobalKline(secid: string, payload: unknown): Global
   }
   const bars: GlobalBar[] = []
   for (const row of rows) {
-    const [date, open, close, high, low, volume] = row as string[]
-    const closeNum = Number(close)
-    if (!date || !Number.isFinite(closeNum) || closeNum <= 0) continue
-    bars.push({
-      date: String(date).slice(0, 10),
-      open: Number.isFinite(Number(open)) ? Number(open) : null,
-      close: closeNum,
-      high: Number.isFinite(Number(high)) ? Number(high) : null,
-      low: Number.isFinite(Number(low)) ? Number(low) : null,
-      volume: Number.isFinite(Number(volume)) ? Number(volume) : null,
-    } as GlobalBar)
+    if (!Array.isArray(row)) continue
+    const [date, rawOpen, rawClose, rawHigh, rawLow, rawVolume] = row
+    const open = num(rawOpen), close = num(rawClose), high = num(rawHigh), low = num(rawLow), volume = num(rawVolume)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || open === null || close === null || high === null || low === null || volume === null ||
+        Math.min(open, close, high, low) <= 0 || volume < 0 || high < Math.max(open, close) || low > Math.min(open, close)) continue
+    bars.push({ date: String(date), open, close, high, low, volume })
   }
   if (!bars.length) return { ok: false, secid, bars: [], error: '腾讯日K全部无效', source: 'tencent-kline' }
   const name = node?.qt?.[key!]?.[1]
@@ -197,6 +200,9 @@ export function parseGlobalKline(secid: string, payload: unknown): GlobalKlineRe
   const data = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).data : undefined
   if (!data || typeof data !== 'object') return { ok: false, secid, bars: [], error: 'K线源返回空数据（可能无该市场历史）', source }
   const d = data as Record<string, unknown>
+  const [market, requestedCode] = secid.split('.')
+  if ((str(d.code) && String(d.code).toUpperCase() !== requestedCode!.toUpperCase()) ||
+      (d.market !== undefined && String(d.market) !== market)) return { ok: false, secid, bars: [], error: 'K线响应品种与请求不一致', source }
   const rawLines = Array.isArray(d.klines) ? d.klines : []
   const bars: GlobalBar[] = []
   for (const line of rawLines) {
@@ -206,8 +212,9 @@ export function parseGlobalKline(secid: string, payload: unknown): GlobalKlineRe
     const date = parts[0]!.trim()
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
     const open = num(parts[1]), close = num(parts[2]), high = num(parts[3]), low = num(parts[4]), volume = num(parts[5])
-    if (close === null || close <= 0) continue
-    bars.push({ date, open: open ?? close, high: high ?? close, low: low ?? close, close, volume: volume ?? 0 })
+    if (open === null || close === null || high === null || low === null || volume === null ||
+        Math.min(open, close, high, low) <= 0 || volume < 0 || high < Math.max(open, close) || low > Math.min(open, close)) continue
+    bars.push({ date, open, high, low, close, volume })
   }
   return { ok: true, secid, code: str(d.code), name: str(d.name), bars, source }
 }
@@ -220,21 +227,8 @@ export interface GlobalQuoteFetchOptions {
 }
 
 async function defaultFetchJson(url: string, init?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), init?.timeoutMs ?? GLOBAL_QUOTE_TIMEOUT_MS)
-  const onAbort = () => controller.abort()
-  init?.signal?.addEventListener('abort', onAbort, { once: true })
-  try {
-    const response = await fetch(url, {
-      headers: { Accept: 'application/json', Referer: 'https://quote.eastmoney.com/' },
-      signal: controller.signal,
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return await response.json()
-  } finally {
-    clearTimeout(timer)
-    init?.signal?.removeEventListener('abort', onAbort)
-  }
+  return httpGetJson(url, {}, { timeoutMs: init?.timeoutMs ?? GLOBAL_QUOTE_TIMEOUT_MS,
+    referer: new URL(url).hostname.endsWith('gtimg.cn') ? 'https://gu.qq.com/' : 'https://quote.eastmoney.com/', signal: init?.signal })
 }
 
 const quoteCache = new Map<string, { at: number; value: GlobalQuoteResult }>()
@@ -260,6 +254,7 @@ export async function fetchGlobalQuote(secidInput: unknown, options: GlobalQuote
 export async function fetchGlobalKline(secidInput: unknown, limit: unknown = GLOBAL_KLINE_DEFAULT_BARS, options: GlobalQuoteFetchOptions = {}): Promise<GlobalKlineResult> {
   const secid = normalizeSecid(secidInput)
   if (!secid) return { ok: false, error: `无效的 secid：${String(secidInput)}`, bars: [], source: 'eastmoney-push2' }
+  if (options.signal?.aborted) throw options.signal.reason ?? new Error('aborted')
   const fetchJson = options.fetchJson ?? defaultFetchJson
   let emError = ''
   try {
@@ -271,6 +266,7 @@ export async function fetchGlobalKline(secidInput: unknown, limit: unknown = GLO
     emError = err instanceof Error ? err.message : String(err)
   }
   // 东财被限流/重置时改用腾讯日K；没有映射的品种如实返回东财的失败原因。
+  if (options.signal?.aborted) throw options.signal.reason ?? new Error('aborted')
   const symbol = TX_GLOBAL_KLINE_SYMBOL[secid]
   if (!symbol) {
     return { ok: false, secid, bars: [], error: `东财日K不可用（${emError}），该品种没有备用源`, source: 'eastmoney-push2' }

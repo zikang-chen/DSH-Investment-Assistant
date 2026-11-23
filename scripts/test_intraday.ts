@@ -20,7 +20,7 @@ import { PROVIDERS } from '../src/data/providers.js'
 import { CAPABILITIES, DEFAULT_PROVIDER_ORDER } from '../src/types.js'
 
 let checks = 0
-function check(name: string, run: () => void) { run(); checks++; console.log(`PASS ${name}`) }
+async function check(name: string, run: () => unknown) { await run(); checks++; console.log(`PASS ${name}`) }
 
 // 结构取自实测：时间,开,收,高,低,量,额,均价
 const FIXTURE = {
@@ -35,7 +35,7 @@ const FIXTURE = {
   },
 }
 
-check('secid：A 股按市场前缀，港股 116，美股 105', () => {
+await check('secid：A 股按市场前缀，港股 116，美股 105', () => {
   assert.equal(intradaySecid('600519', 'a'), '1.600519')
   assert.equal(intradaySecid('000001', 'a'), '0.000001')
   assert.equal(intradaySecid('sh000300', 'a'), '1.000300')
@@ -43,7 +43,7 @@ check('secid：A 股按市场前缀，港股 116，美股 105', () => {
   assert.equal(intradaySecid('AAPL', 'us'), '105.AAPL')
 })
 
-check('解析：price 取收盘列，均价/量/额映射，时间保留原文并给 ISO', () => {
+await check('解析：price 取收盘列，均价/量/额映射，时间保留原文并给 ISO', () => {
   const s = parseIntradayPayload(FIXTURE, { code: '600519', kind: 'a', days: 1 })
   assert.equal(s.name, '贵州茅台')
   assert.equal(s.preClose, 1485.75)
@@ -56,7 +56,7 @@ check('解析：price 取收盘列，均价/量/额映射，时间保留原文�
   assert.equal(s.source, 'eastmoney-push2his-trends2')
 })
 
-check('解析：字段缺失为 null，不补 0', () => {
+await check('解析：字段缺失为 null，不补 0', () => {
   const s = parseIntradayPayload({ data: { trends: ['2026-11-23 09:30,,,,,,,'] } }, { code: '600519', kind: 'a', days: 1 })
   assert.equal(s.points[0]!.price, null)
   assert.equal(s.points[0]!.avgPrice, null)
@@ -64,29 +64,27 @@ check('解析：字段缺失为 null，不补 0', () => {
   assert.equal(s.preClose, null)
 })
 
-check('解析：真实 0 保留为 0（与缺失区分）', () => {
+await check('解析：真实 0 保留为 0（与缺失区分）', () => {
   const s = parseIntradayPayload({ data: { trends: ['2026-11-23 09:30,0,0,0,0,0,0,0'], preClose: 0 } }, { code: '600519', kind: 'a', days: 1 })
   assert.equal(s.points[0]!.price, 0)
   assert.equal(s.points[0]!.volume, 0)
 })
 
-check('解析：空 trends 抛错（不返回空图）', () => {
+await check('解析：空 trends 抛错（不返回空图）', () => {
   assert.throws(() => parseIntradayPayload({ data: { trends: [] } }, { code: '600519', kind: 'a', days: 1 }), /未返回数据|空序列/)
   assert.throws(() => parseIntradayPayload({}, { code: '600519', kind: 'a', days: 1 }), /未返回数据|空序列/)
   assert.throws(() => parseIntradayPayload(null, { code: '600519', kind: 'a', days: 1 }), /未返回数据|空序列/)
 })
 
-check('解析：时间格式不认识时 at=null，不猜时区', () => {
-  const s = parseIntradayPayload({ data: { trends: ['2026/11/23 09:30,1,1,1,1,1,1,1'] } }, { code: '600519', kind: 'a', days: 1 })
-  assert.equal(s.points[0]!.at, null)
-  assert.equal(s.points[0]!.time, '2026/11/23 09:30')
+await check('解析：时间格式不认识时拒绝，不猜日期时区', () => {
+  assert.throws(() => parseIntradayPayload({ data: { trends: ['2026/11/23 09:30,1,1,1,1,1,1,1'] } }, { code: '600519', kind: 'a', days: 1 }), /日期时间非法/)
 })
 
-check('上限：5 日封顶，参数不合法时退到 1 日', () => {
+await check('上限：5 日封顶，参数不合法时退到 1 日', () => {
   assert.equal(INTRADAY_MAX_DAYS, 5)
 })
 
-check('接线：capability intraday 的默认顺序为 东财 → 腾讯（两个 provider 均已注册）', () => {
+await check('接线：capability intraday 的默认顺序为 东财 → 腾讯（两个 provider 均已注册）', () => {
   assert.ok(CAPABILITIES.includes('intraday'))
   assert.deepEqual(DEFAULT_PROVIDER_ORDER.intraday, ['em_intraday', 'tx_intraday'])
   const provider = PROVIDERS.find((p) => p.id === 'em_intraday')
@@ -95,7 +93,7 @@ check('接线：capability intraday 的默认顺序为 东财 → 腾讯（两�
   assert.match(EM_INTRADAY_URL, /push2his\.eastmoney\.com\/api\/qt\/stock\/trends2\/get$/)
 })
 
-check('接线：service 暴露 getIntraday 并转发 code/kind/days', async () => {
+await check('接线：service 暴露 getIntraday 并转发 code/kind/days', async () => {
   const calls: Array<{ cap: string; args: Record<string, unknown> }> = []
   const fake = {
     call: async (cap: string, args: Record<string, unknown>) => { calls.push({ cap, args }); return { points: [] } },
@@ -106,7 +104,7 @@ check('接线：service 暴露 getIntraday 并转发 code/kind/days', async () =
   assert.deepEqual(calls[0]!.args, { code: '00700', kind: 'hk', days: 5 })
 })
 
-check('接线：路由 /intraday 已挂载且校验 kind/days', async () => {
+await check('接线：路由 /intraday 已挂载且校验 kind/days', async () => {
   const src = await readFile('src/server-routes.ts', 'utf8')
   assert.match(src, /sub === '\/intraday'/, '缺少 /intraday 路由')
   assert.match(src, /kind 必须是 a \/ hk \/ us/)
@@ -114,18 +112,20 @@ check('接线：路由 /intraday 已挂载且校验 kind/days', async () => {
   assert.match(src, /finance\.getIntraday\(/)
 })
 
-check('接线：K 线工作区提供分时模式与图表组件', async () => {
+await check('接线：K 线工作区提供分时模式与图表组件', async () => {
   const view = await readFile('src/client/index.tsx', 'utf8')
   assert.match(view, /'intraday1'/, '缺少分时(1日)模式')
   assert.match(view, /'intraday5'/, '缺少 5 日分时模式')
-  assert.match(view, /loadIntraday\(/, '缺少分时加载函数')
-  assert.match(view, /IntradayChart/, '未使用分时图组件')
-  assert.match(view, /基金是每日净值（T\+1）/, '基金缺少明确说明')
+  assert.match(view, /IntradayView/, '未使用独立分时视图')
+  const component = await readFile('src/client/intraday-view.tsx', 'utf8')
+  assert.match(component, /IntradayChart/, '未使用分时图组件')
+  assert.match(component, /controller.abort\(\)/, '切换/卸载必须取消旧请求')
+  assert.match(component, /基金是每日净值（T\+1）/, '基金缺少明确说明')
   const chart = await readFile('src/client/intraday-chart.tsx', 'utf8')
   assert.match(chart, /不除权/, '分时图需说明未除权')
 })
 
-check('备用源：symbol 映射（A 带 sh/sz、港股 hk、美股 us）', () => {
+await check('备用源：symbol 映射（A 带 sh/sz、港股 hk、美股 us）', () => {
   assert.equal(txIntradaySymbol('600519', 'a'), 'sh600519')
   assert.equal(txIntradaySymbol('000001', 'a'), 'sz000001')
   assert.equal(txIntradaySymbol('sh000300', 'a'), 'sh000300')
@@ -133,7 +133,7 @@ check('备用源：symbol 映射（A 带 sh/sz、港股 hk、美股 us）', () =
   assert.equal(txIntradaySymbol('aapl', 'us'), 'usAAPL')
 })
 
-check('备用源解析：A 股累计量是「手」，均价 = 额/(量×100)', () => {
+await check('备用源解析：A 股累计量是「手」，均价 = 额/(量×100)', () => {
   const payload = {
     data: {
       sh600519: {
@@ -156,23 +156,23 @@ check('备用源解析：A 股累计量是「手」，均价 = 额/(量×100)', 
   assert.equal(s.source, 'tencent-minute')
 })
 
-check('备用源解析：港股量为股，不乘 100', () => {
+await check('备用源解析：港股量为股，不乘 100', () => {
   const payload = { data: { hk00700: { data: { date: '2026-11-23', data: ['0930 335 1000 335000'] }, qt: { hk00700: ['100', '腾讯控股', '00700', '338', '344'] } } } }
   const s = parseTxMinutePayload(payload, { code: '00700', kind: 'hk', symbol: 'hk00700', days: 1 })
   assert.equal(s.points[0]!.avgPrice, 335)
   assert.equal(s.preClose, 344)
 })
 
-check('备用源：空 data 抛错，不返回空图', () => {
+await check('备用源：空 data 抛错，不返回空图', () => {
   assert.throws(() => parseTxMinutePayload({}, { code: '600519', kind: 'a', symbol: 'sh600519', days: 1 }), /未返回数据|空序列/)
 })
 
-check('备用源限制：5 日与美股显式拒绝（不伪造）', async () => {
+await check('备用源限制：5 日与美股显式拒绝（不伪造）', async () => {
   await assert.rejects(() => fetchTxIntraday('600519', 'a', 5), /只支持当日/)
   await assert.rejects(() => fetchTxIntraday('AAPL', 'us', 1), /没有美股分钟数据/)
 })
 
-check('接线：intraday 顺序为 东财 → 腾讯，两个 provider 都已注册', () => {
+await check('接线：intraday 顺序为 东财 → 腾讯，两个 provider 都已注册', () => {
   assert.deepEqual(DEFAULT_PROVIDER_ORDER.intraday, ['em_intraday', 'tx_intraday'])
   assert.ok(PROVIDERS.some((p) => p.id === 'em_intraday'))
   assert.ok(PROVIDERS.some((p) => p.id === 'tx_intraday'))

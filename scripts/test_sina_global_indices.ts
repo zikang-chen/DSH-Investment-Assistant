@@ -18,10 +18,11 @@ import { PROVIDERS } from '../src/data/providers.js'
 import { DEFAULT_PROVIDER_ORDER } from '../src/types.js'
 
 let checks = 0
-function check(name: string, run: () => void) { run(); checks++; console.log(`PASS ${name}`) }
+async function check(name: string, run: () => unknown) { await run(); checks++; console.log(`PASS ${name}`) }
 
 // 实测原文（2026-11-23），仅保留用到的行
 const TEXT = [
+  'var hq_str_gb_$inx="标普500,6910.39,-3.7,2026-11-21 05:36:04,-265.44";',
   'var hq_str_int_sp500="标普指数,6643.70,38.98,0.59";',
   'var hq_str_int_dji="道琼斯,46247.29,299.97,0.65";',
   'var hq_str_znb_SPTSX="S&P/TSX综合指数,29761.28,29.30,0.10,9/26/2025,1758859200";',
@@ -33,30 +34,30 @@ const TEXT = [
   'var hq_str_znb_KS11="";',
 ].join('\n')
 
-check('行解析：只取 hq_str_ 行，空值行保留为 fields=[]', () => {
+await check('行解析：只取 hq_str_ 行，空值行保留为 fields=[]', () => {
   const lines = parseSinaLines(TEXT)
-  assert.equal(lines.length, 9)
+  assert.equal(lines.length, 10)
   const empty = lines.find((l) => l.symbol === 'znb_KS11')
   assert.deepEqual(empty?.fields, [])
 })
 
-check('int_*：名称,现价,涨跌额,涨跌幅', () => {
+await check('int_*：名称,现价,涨跌额,涨跌幅', () => {
   const q = parseSinaQuote('int_sp500', ['标普指数', '6643.70', '38.98', '0.59'])
   assert.deepEqual([q!.price, q!.change, q!.changePct], [6643.7, 38.98, 0.59])
   assert.equal(q!.asOf, null)
 })
 
-check('znb_*：带日期时间的取 asOf，不带的为 null', () => {
+await check('znb_*：带日期时间的取 asOf，不带的为 null', () => {
   const kos = parseSinaQuote('znb_KOSPI', parseSinaLines(TEXT).find((l) => l.symbol === 'znb_KOSPI')!.fields)
   assert.equal(kos!.price, 4623.16)
   assert.equal(kos!.changePct, -5.07)
   assert.equal(kos!.asOf, '2026-11-23T03:08:00.000Z')
   const tsx = parseSinaQuote('znb_SPTSX', ['S&P/TSX综合指数', '29761.28', '29.30', '0.10', '9/26/2025', '1758859200'])
   assert.equal(tsx!.price, 29761.28)
-  assert.equal(tsx!.asOf, null, '只有毫秒时间戳时不应瞎猜日期')
+  assert.equal(tsx!.asOf, new Date(1758859200 * 1000).toISOString(), '显式秒时间戳必须保留以检测过期')
 })
 
-check('rt_hk：现价取第 7 列，日期/时间拼 ISO', () => {
+await check('rt_hk：现价取第 7 列，日期/时间拼 ISO', () => {
   const fields = parseSinaLines(TEXT).find((l) => l.symbol === 'rt_hkHSTECH')!.fields
   const q = parseSinaQuote('rt_hkHSTECH', fields)!
   assert.equal(q.price, 3431.92)
@@ -64,7 +65,7 @@ check('rt_hk：现价取第 7 列，日期/时间拼 ISO', () => {
   assert.equal(q.asOf, '2026-11-23T03:08:12.000Z')
 })
 
-check('A 股指数：price 取第 4 列，涨跌幅由昨收推导', () => {
+await check('A 股指数：price 取第 4 列，涨跌幅由昨收推导', () => {
   const fields = parseSinaLines(TEXT).find((l) => l.symbol === 'sh000001')!.fields
   const q = parseSinaQuote('sh000001', fields)!
   assert.equal(q.price, 3494.7524)
@@ -73,7 +74,7 @@ check('A 股指数：price 取第 4 列，涨跌幅由昨收推导', () => {
   assert.ok(Math.abs((q.changePct ?? 0) - -1.1047) < 0.01)
 })
 
-check('期货 hf_*：price/昨结推导涨跌幅并标注来源字段', () => {
+await check('期货 hf_*：price/昨结推导涨跌幅并标注来源字段', () => {
   const fields = parseSinaLines(TEXT).find((l) => l.symbol === 'hf_GC')!.fields
   const q = parseSinaQuote('hf_GC', fields)!
   assert.equal(q.price, 3597.022)
@@ -82,7 +83,7 @@ check('期货 hf_*：price/昨结推导涨跌幅并标注来源字段', () => {
   assert.ok(Math.abs((q.changePct ?? 0) - 2.32) < 0.02)
 })
 
-check('DINIW：美元指数按 现价/昨收 推导', () => {
+await check('DINIW：美元指数按 现价/昨收 推导', () => {
   const fields = parseSinaLines(TEXT).find((l) => l.symbol === 'DINIW')!.fields
   const q = parseSinaQuote('DINIW', fields)!
   assert.equal(q.price, 103.7638)
@@ -90,31 +91,31 @@ check('DINIW：美元指数按 现价/昨收 推导', () => {
   assert.ok(Math.abs((q.changePct ?? 0) - -0.033) < 0.01)
 })
 
-check('空行返回 null（由 build 层转成该行 error）', () => {
+await check('空行返回 null（由 build 层转成该行 error）', () => {
   assert.equal(parseSinaQuote('znb_KS11', []), null)
 })
 
-check('build：未映射的品种（美债 10Y）显式 error，不隐藏', () => {
+await check('build：未映射的品种（美债 10Y）显式 error，不隐藏', () => {
   const defs = GLOBAL_INDEX_DEFS.filter((d) => d.secid === '171.US10Y' || d.secid === '100.SPX')
-  const { rows, failed } = buildSinaGlobalRows(TEXT, defs)
+  const { rows, failed } = buildSinaGlobalRows(TEXT, defs, '2026-11-23T03:10:00Z')
   const spx = rows.find((r) => r.secid === '100.SPX')!
   const us10y = rows.find((r) => r.secid === '171.US10Y')!
-  assert.equal(spx.price, 6643.7)
+  assert.equal(spx.price, 6910.39)
   assert.equal(spx.source, 'sina')
   assert.equal(us10y.price, null)
   assert.match(us10y.error ?? '', /新浪无此品种/)
   assert.equal(failed, 1)
 })
 
-check('build：韩国指数映射到 znb_KOSPI（不是空的 znb_KS11）', () => {
+await check('build：韩国指数映射到 znb_KOSPI（不是空的 znb_KS11）', () => {
   const defs = GLOBAL_INDEX_DEFS.filter((d) => d.secid === '100.KS11')
   assert.equal(SINA_SYMBOL_BY_SECID['100.KS11'], 'znb_KOSPI')
-  const { rows, failed } = buildSinaGlobalRows(TEXT, defs)
+  const { rows, failed } = buildSinaGlobalRows(TEXT, defs, '2026-11-23T03:10:00Z')
   assert.equal(rows[0]!.price, 4623.16)
   assert.equal(failed, 0)
 })
 
-check('build：行数据为空时计入 failed 并带原因', () => {
+await check('build：行数据为空时计入 failed 并带原因', () => {
   // 只给一条空值行，模拟源侧返回空字符串
   const emptyText = 'var hq_str_znb_KOSPI="";'
   const defs = GLOBAL_INDEX_DEFS.filter((d) => d.secid === '100.KS11')
@@ -124,19 +125,19 @@ check('build：行数据为空时计入 failed 并带原因', () => {
   assert.equal(failed, 1)
 })
 
-check('映射：所有非美债品种都有新浪 symbol', () => {
-  const missing = GLOBAL_INDEX_DEFS.filter((d) => d.secid !== '171.US10Y' && !SINA_SYMBOL_BY_SECID[d.secid])
+await check('映射：所有非美债品种都有新浪 symbol', () => {
+  const missing = GLOBAL_INDEX_DEFS.filter((d) => !['171.US10Y', '101.HG00Y'].includes(d.secid) && !SINA_SYMBOL_BY_SECID[d.secid])
   assert.deepEqual(missing.map((d) => d.secid), [])
 })
 
-check('接线：global_indices 顺序为 东财 → 新浪，且 provider 已注册', () => {
+await check('接线：global_indices 顺序为 东财 → 新浪，且 provider 已注册', () => {
   assert.deepEqual(DEFAULT_PROVIDER_ORDER.global_indices, ['em_global_indices', 'sina_global_indices'])
   const provider = PROVIDERS.find((p) => p.id === 'sina_global_indices')
   assert.ok(provider, 'sina_global_indices 未注册')
   assert.equal(provider!.capability, 'global_indices')
 })
 
-check('接线：路由/服务未把新浪写成唯一来源（仍保留东财首选）', async () => {
+await check('接线：路由/服务未把新浪写成唯一来源（仍保留东财首选）', async () => {
   const src = await readFile('src/data/providers.ts', 'utf8')
   assert.match(src, /id: 'em_global_indices'/)
   assert.match(src, /id: 'sina_global_indices'/)

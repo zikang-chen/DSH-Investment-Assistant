@@ -40,13 +40,14 @@ async function withNetworkRetry<T>(run: () => Promise<T>, signal?: AbortSignal):
 }
 
 /** 一次请求：自带超时与调用方取消联动。 */
-async function fetchOnce(u: URL, options: HttpGetOptions, accept: string): Promise<Response> {
+async function fetchOnce<T>(u: URL, options: HttpGetOptions, accept: string, consume: (res: Response) => Promise<T>): Promise<T> {
+  if (options.signal?.aborted) throw options.signal.reason ?? new Error('aborted')
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(new Error(`http timeout ${options.timeoutMs}ms`)), options.timeoutMs)
   const onAbort = () => ctrl.abort(options.signal?.reason ?? new Error('aborted'))
   options.signal?.addEventListener('abort', onAbort, { once: true })
   try {
-    return await fetch(u, {
+    const response = await fetch(u, {
       method: 'GET',
       signal: ctrl.signal,
       headers: {
@@ -56,6 +57,8 @@ async function fetchOnce(u: URL, options: HttpGetOptions, accept: string): Promi
         ...options.headers,
       },
     })
+    // 超时覆盖完整响应体，不能在拿到 headers 后就清掉 timer。
+    return await consume(response)
   } finally {
     clearTimeout(timer)
     options.signal?.removeEventListener('abort', onAbort)
@@ -73,11 +76,10 @@ export async function httpGetJson<T = unknown>(
     if (v === undefined) continue
     u.searchParams.set(k, String(v))
   }
-  return withNetworkRetry(async () => {
-    const res = await fetchOnce(u, options, 'application/json,text/plain,*/*')
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} for ${u.hostname}`)
+  return withNetworkRetry(() => fetchOnce(u, options, 'application/json,text/plain,*/*', async res => {
+    if (!res.ok) { await res.body?.cancel(); throw new Error(`HTTP ${res.status} ${res.statusText} for ${u.hostname}`) }
     return (await res.json()) as T
-  }, options.signal)
+  }), options.signal)
 }
 
 export async function httpGetText(
@@ -91,14 +93,13 @@ export async function httpGetText(
     if (v === undefined) continue
     u.searchParams.set(k, String(v))
   }
-  return withNetworkRetry(async () => {
-    const res = await fetchOnce(u, options, '*/*')
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
+  return withNetworkRetry(() => fetchOnce(u, options, '*/*', async res => {
+    if (!res.ok) { await res.body?.cancel(); throw new Error(`HTTP ${res.status} ${res.statusText}`) }
     if (options.encoding && options.encoding.toLowerCase() !== 'utf-8') {
       return new TextDecoder(options.encoding).decode(await res.arrayBuffer())
     }
     return await res.text()
-  }, options.signal)
+  }), options.signal)
 }
 
 export function marketCode(symbol: string): 0 | 1 {

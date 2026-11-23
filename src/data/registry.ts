@@ -17,6 +17,7 @@ import { PROVIDER_BY_ID, PROVIDERS } from './providers.js'
 function sourceFamily(id: string): string {
   if (id.startsWith('em_')) return '东财'
   if (id.startsWith('tx_')) return '腾讯'
+  if (id.startsWith('sina_')) return '新浪'
   if (id.startsWith('ws_')) return 'WeStock'
   if (id.startsWith('yahoo_')) return 'Yahoo'
   if (id.startsWith('ddg_')) return 'DuckDuckGo'
@@ -157,7 +158,11 @@ export class ProviderRegistry {
 
   /** Providers actually tried for a capability: user policy wins, else probe/default order. */
   private effectiveOrder(capability: Capability): string[] {
-    const base = this.policy[capability] ?? this.providerOrder[capability] ?? DEFAULT_PROVIDER_ORDER[capability]
+    // 探测报告只是健康度排序，不是禁用清单。升级后新增的备用源也要进入尝试链。
+    // 用户显式 policy（包括空数组）仍是完整覆盖，不替用户重新启用来源。
+    const base = this.policy[capability] ?? [...new Set([
+      ...(this.providerOrder[capability] ?? []), ...DEFAULT_PROVIDER_ORDER[capability],
+    ])]
     // 用户显式排过序就完全听用户的；否则把 WeStock 提到最前（免鉴权、覆盖全、本地调用快）。
     if (this.options.preferWestock === false || this.policy[capability]) return base
     const ws = base.filter((id) => id.startsWith('ws_'))

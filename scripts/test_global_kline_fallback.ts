@@ -56,7 +56,7 @@ check('解析：按对象里的实际 key 取（us.INX 带前缀），字段顺�
 
 check('解析：收盘价非正/非有限的行跳过，不补 0', () => {
   const r = parseTencentGlobalKline('100.SPX', {
-    data: { 'us.INX': { day: [['2026-11-20', '1', '0', '1', '1', '1'], ['2026-11-19', '1', '-', '1', '1', '1'], ['2026-11-18', '1', '10', '11', '9', '5']] } },
+    data: { 'us.INX': { day: [['2026-11-20', '1', '0', '1', '1', '1'], ['2026-11-19', '1', '-', '1', '1', '1'], ['2026-11-18', '10', '10', '11', '9', '5']] } },
   })
   assert.equal(r.bars.length, 1)
   assert.equal(r.bars[0]!.close, 10)
@@ -91,7 +91,7 @@ await checkAsync('回退：东财返回空 bars 时同样回落', async () => {
   const fakeFetch = async (url: string) => url.includes('push2his')
     ? { data: { klines: [] } }
     : TX_FIXTURE
-  const r = await fetchGlobalKline('100.HSI', 60, { fetchJson: fakeFetch as never })
+  const r = await fetchGlobalKline('100.SPX', 60, { fetchJson: fakeFetch as never })
   assert.equal(r.ok, true)
   assert.equal(r.source, 'tencent-kline')
 })
