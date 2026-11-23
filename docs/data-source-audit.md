@@ -126,6 +126,7 @@
 1. **HTTP 层对瞬时网络错误重试一次**（`UND_ERR_SOCKET` / `ECONNRESET` / `ECONNABORTED` 等，间隔 350ms，不重试 4xx/5xx 与用户取消）——`src/data/http.ts`。
 2. **全球指数新增新浪兜底源**（`sina_global_indices`，顺序：东财 → 新浪）。一次请求取 24 个品种，实测 23 个有价；美债 10Y 新浪无 symbol，用东财日线补，并把该行来源标为 `eastmoney-push2his-daily`。
 3. **分时新增腾讯兜底源**（`tx_intraday`，顺序：东财 → 腾讯）。腾讯只有当日、无美股分钟，遇到 5 日或美股请求会显式报错，不返回残缺曲线。
+4. **全球指数日K新增腾讯兜底**（`TX_GLOBAL_KLINE_SYMBOL`）。面板点开「标普500 · 日K」失败就是这一条：东财 `push2his` 被重置时改取腾讯 `appstock/app/kline/kline`。覆盖标普、道指、纳指、恒指、恒生科技、上证、深证、创业板；日经、欧洲、商品、美元指数没有同日线，保持报错并在标题按实际来源标注「腾讯兜底」。
 
 仍未解决的部分（不隐瞒）：
 

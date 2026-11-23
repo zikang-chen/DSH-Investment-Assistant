@@ -116,7 +116,61 @@ export interface GlobalKlineResult {
   name?: string
   bars: GlobalBar[]
   error?: string
-  source: 'eastmoney-push2'
+  source: 'eastmoney-push2' | 'tencent-kline'
+}
+
+/**
+ * 腾讯日 K 备源映射（东财 push2his 被重置时的兜底）。
+ * 只映射腾讯确有连续日线的品种：美股三大指数、恒指与恒生科技、沪深指数。
+ * 100.NDX 在东财返回的其实是纳斯达克综合指数（与腾讯 usIXIC 同一数值），故按 usIXIC 取。
+ * 其余品种（日经、欧洲、商品、美元指数）腾讯没有同日线，保持东财失败即报错。
+ */
+export const TX_GLOBAL_KLINE_SYMBOL: Readonly<Record<string, string>> = {
+  '100.SPX': 'usINX',
+  '100.DJIA': 'usDJI',
+  '100.NDX': 'usIXIC',
+  '100.HSI': 'hkHSI',
+  '124.HSTECH': 'hkHSTECH',
+  '1.000001': 'sh000001',
+  '0.399001': 'sz399001',
+  '0.399006': 'sz399006',
+}
+
+export function tencentKlineUrl(symbol: string, limit: number): string {
+  const count = clampGlobalKlineBars(limit)
+  return `https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param=${encodeURIComponent(symbol)},day,,,${count}`
+}
+
+/**
+ * 解析腾讯日 K：`data[<key>].day` 里每行 `date,open,close,high,low,volume`（升序）。
+ * 腾讯对部分品种返回的 key 带市场前缀（us.INX），所以按对象里的第一个 key 取，不写死。
+ * 收盘价非正/非有限的行跳过，不补 0。
+ */
+export function parseTencentGlobalKline(secid: string, payload: unknown): GlobalKlineResult {
+  const data = (payload as { data?: Record<string, { day?: unknown[][]; qt?: Record<string, string[]> }> } | null)?.data
+  const key = data ? Object.keys(data)[0] : undefined
+  const node = key ? data![key] : undefined
+  const rows = node?.day
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { ok: false, secid, bars: [], error: '腾讯日K未返回数据', source: 'tencent-kline' }
+  }
+  const bars: GlobalBar[] = []
+  for (const row of rows) {
+    const [date, open, close, high, low, volume] = row as string[]
+    const closeNum = Number(close)
+    if (!date || !Number.isFinite(closeNum) || closeNum <= 0) continue
+    bars.push({
+      date: String(date).slice(0, 10),
+      open: Number.isFinite(Number(open)) ? Number(open) : null,
+      close: closeNum,
+      high: Number.isFinite(Number(high)) ? Number(high) : null,
+      low: Number.isFinite(Number(low)) ? Number(low) : null,
+      volume: Number.isFinite(Number(volume)) ? Number(volume) : null,
+    } as GlobalBar)
+  }
+  if (!bars.length) return { ok: false, secid, bars: [], error: '腾讯日K全部无效', source: 'tencent-kline' }
+  const name = node?.qt?.[key!]?.[1]
+  return { ok: true, secid, ...(typeof name === 'string' ? { name } : {}), bars, source: 'tencent-kline' }
 }
 
 export function clampGlobalKlineBars(limit: unknown): number {
@@ -207,10 +261,25 @@ export async function fetchGlobalKline(secidInput: unknown, limit: unknown = GLO
   const secid = normalizeSecid(secidInput)
   if (!secid) return { ok: false, error: `无效的 secid：${String(secidInput)}`, bars: [], source: 'eastmoney-push2' }
   const fetchJson = options.fetchJson ?? defaultFetchJson
+  let emError = ''
   try {
     const payload = await fetchJson(globalKlineUrl(secid, clampGlobalKlineBars(limit)), { signal: options.signal })
-    return parseGlobalKline(secid, payload)
+    const parsed = parseGlobalKline(secid, payload)
+    if (parsed.ok && parsed.bars.length) return parsed
+    emError = parsed.error ?? '东财未返回日K'
   } catch (err) {
-    return { ok: false, secid, bars: [], error: err instanceof Error ? err.message : String(err), source: 'eastmoney-push2' }
+    emError = err instanceof Error ? err.message : String(err)
+  }
+  // 东财被限流/重置时改用腾讯日K；没有映射的品种如实返回东财的失败原因。
+  const symbol = TX_GLOBAL_KLINE_SYMBOL[secid]
+  if (!symbol) {
+    return { ok: false, secid, bars: [], error: `东财日K不可用（${emError}），该品种没有备用源`, source: 'eastmoney-push2' }
+  }
+  try {
+    const payload = await fetchJson(tencentKlineUrl(symbol, clampGlobalKlineBars(limit)), { signal: options.signal })
+    const fallback = parseTencentGlobalKline(secid, payload)
+    return fallback.ok ? fallback : { ...fallback, error: `东财不可用（${emError}）；${fallback.error ?? ''}` }
+  } catch (err) {
+    return { ok: false, secid, bars: [], error: `东财与腾讯日K都不可用：${emError} / ${err instanceof Error ? err.message : String(err)}`, source: 'eastmoney-push2' }
   }
 }

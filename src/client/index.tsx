@@ -1164,16 +1164,16 @@ function GlobalIndicesPanel() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [openIndex, setOpenIndex] = useState('')
-  const [indexBars, setIndexBars] = useState<{ secid: string; bars: HistBar[]; error?: string } | undefined>()
+  const [indexBars, setIndexBars] = useState<{ secid: string; bars: HistBar[]; error?: string; source?: string } | undefined>()
   const indexSeq = useRef(0)
   const toggleIndex = async (row: GlobalIndexRow) => {
     if (openIndex === row.secid) { setOpenIndex(''); setIndexBars(undefined); return }
     setOpenIndex(row.secid); setIndexBars(undefined)
     const seq = ++indexSeq.current
     try {
-      const r = await apiGet<{ ok?: boolean; bars?: HistBar[]; error?: string }>(`/global/kline?secid=${encodeURIComponent(row.secid)}&limit=500`)
+      const r = await apiGet<{ ok?: boolean; bars?: HistBar[]; error?: string; source?: string }>(`/global/kline?secid=${encodeURIComponent(row.secid)}&limit=500`)
       if (indexSeq.current !== seq) return
-      setIndexBars({ secid: row.secid, bars: r.ok === false ? [] : r.bars ?? [], error: r.ok === false ? (r.error || 'K线读取失败') : undefined })
+      setIndexBars({ secid: row.secid, bars: r.ok === false ? [] : r.bars ?? [], error: r.ok === false ? (r.error || 'K线读取失败') : undefined, ...(r.source ? { source: r.source } : {}) })
     } catch (err) { if (indexSeq.current === seq) setIndexBars({ secid: row.secid, bars: [], error: errText(err) }) }
   }
   const openRow = rows.find(row => row.secid === openIndex)
@@ -1223,11 +1223,11 @@ function GlobalIndicesPanel() {
                   h('span', { style: { ...S.muted, fontSize: 10 } }, `${row.region ?? region}${row.asOf ? ` · ${row.asOf}` : ''} · 东财${active ? ' · 收起' : ' · 看K线'}`))
               })),
       openRow ? h('div', { style: { borderTop: `1px solid ${R.line}`, paddingTop: 8 } },
-        h('div', { style: { ...S.title, marginBottom: 6 } }, `${openRow.name} · 日K${indexBars?.bars?.length ? ` · ${indexBars.bars.length} 根（${String(indexBars.bars[0]!.date).slice(0, 10)} → ${String(indexBars.bars[indexBars.bars.length - 1]!.date).slice(0, 10)}）` : ''}`),
+        h('div', { style: { ...S.title, marginBottom: 6 } }, `${openRow.name} · 日K${indexBars?.bars?.length ? ` · ${indexBars.bars.length} 根（${String(indexBars.bars[0]!.date).slice(0, 10)} → ${String(indexBars.bars[indexBars.bars.length - 1]!.date).slice(0, 10)}）` : ''}${indexBars?.secid === openRow.secid && indexBars.source === 'tencent-kline' ? ' · 腾讯兜底' : ''}`),
         indexBars?.secid === openRow.secid
           ? (indexBars.error ? h('div', { role: 'alert', style: { ...S.muted, color: DANGER, fontSize: 12 } }, indexBars.error) : indexBars.bars.length ? h(KlineChart, { bars: indexBars.bars, title: `${openRow.name} 日K`, height: 280 }) : h('div', { style: S.muted }, '暂无K线数据。'))
           : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 140 }))) : null,
-      h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：东方财富全球指数；默认美国。点击任一指数可展开日K线。点位与显示精度以源为准，可能延迟，不代表可交易报价。')))
+      h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：东方财富全球指数，不可用时日K回落腾讯；默认美国。点击任一指数可展开日K线。点位与显示精度以源为准。')))
 }
 
 function QuotesView(props: {
