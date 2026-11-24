@@ -11,10 +11,13 @@ import { buildFundDossier } from '../data/fund-dossier.js'
 import { GLOBAL_MACRO_SERIES_KEYS } from '../data/global-macro.js'
 import { fetchAndBuildGlobalNewsRadar } from '../news/global-radar.js'
 import { fetchGlobalQuote, fetchGlobalKline } from '../data/global-quotes.js'
+import { fetchSinaGlobalQuote } from '../data/sina-single-quote.js'
+import { fetchRealYields } from '../data/us-real-yields.js'
 import { listCnDatasets, fetchCnDataset, checkCnBridge } from '../data/cn-datasets.js'
 import { dossierToolResult } from './dossier-data.js'
 import { registerIntradayTools } from './intraday.js'
 import { registerTeamTools } from './team.js'
+import { registerMetricTools } from './metrics.js'
 import { fetchStrategyExperiment } from '../strategy/lab-service.js'
 import { reviewStrategyEnvironment } from '../strategy/lab.js'
 import { evaluatePortfolioPolicy, type PortfolioPolicyInput } from '../strategy/portfolio-policy.js'
@@ -57,6 +60,7 @@ const jsonOut = {
 export function registerTools(ctx: Context, finance: FinanceDataService, store: PortfolioStore, analyses: AnalysisStore, bus: PanelBus, personal?: PersonalStore, library?: StrategyLibrary) {
   registerIntradayTools(ctx, finance)
   registerTeamTools(ctx)
+  registerMetricTools(ctx)
 
   // 个股深度档案：一次调用拿到该标的的行情外全部维度（研究/资金/股东/风险/资讯/产业链，
   // A 股另有东财公司事件明细与全球财务；口径/时点随 section 返回）。
@@ -747,9 +751,43 @@ export function registerTools(ctx: Context, finance: FinanceDataService, store: 
     async execute() {
       const results = await Promise.all(CROSS_ASSET_BASKET.map(async item => {
         const res = await fetchGlobalQuote(item.secid)
-        return { secid: item.secid, label: item.label, ok: res.ok, price: res.quote?.price ?? null, changePct: res.quote?.changePct ?? null, change: res.quote?.change ?? null, asOf: res.quote?.asOf, error: res.ok ? undefined : res.error }
+        if (res.ok) {
+          return { secid: item.secid, label: item.label, ok: true, price: res.quote?.price ?? null, changePct: res.quote?.changePct ?? null, change: res.quote?.change ?? null, asOf: res.quote?.asOf, source: 'eastmoney-push2',
+            meta: { unit: '指数点/合约价（随品种）', window: '最新', stale: res.quote?.asOf ? 'fresh' : 'unknown', conflict: false } }
+        }
+        // 东财整条链挂掉时不要让海外全景一起消失：回落到新浪/腾讯（它们与东财独立）。
+        const fallback = await fetchSinaGlobalQuote(item.secid)
+        return fallback
+          ? { secid: item.secid, label: item.label, ok: true, price: fallback.price, changePct: fallback.changePct, change: fallback.change, asOf: fallback.asOf, source: fallback.source,
+              meta: { unit: '指数点/合约价（随品种）', window: '最新', stale: fallback.asOf ? 'fresh' : 'unknown', conflict: false },
+              note: `东财不可用（${res.error ?? 'unknown'}），已回落备用源` }
+          : { secid: item.secid, label: item.label, ok: false, price: null, changePct: null, change: null, error: res.error ?? '不可用' }
       }))
-      return asJson({ ok: true, at: new Date().toISOString(), source: 'eastmoney-push2', rows: results })
+      const degraded = results.filter(row => row.ok && 'note' in row).length
+      const failed = results.filter(row => !row.ok).length
+      return asJson({
+        ok: true, at: new Date().toISOString(),
+        source: degraded ? 'eastmoney + 备用源' : 'eastmoney-push2',
+        ...(degraded ? { degraded } : {}),
+        ...(failed ? { failed } : {}),
+        rows: results,
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'get_us_real_yields',
+    description: '美国实际利率（TIPS 恒定到期）与盈亏平衡通胀：取财政部官方每日曲线 CSV，给出 5/7/10/20/30 年实际收益率、名义收益率与两者之差（同一天才相减）。比「名义10Y − CPI同比」口径更准，用于给黄金、成长股折现、久期风险定价。数据为最新一个交易日，缺失不补 0。',
+    parameters: {
+      year: { type: 'number', description: '曲线年份，默认今年（跨年后取新年份）' },
+    },
+    output: jsonOut,
+    async execute(args, exec) {
+      const report = await fetchRealYields({
+        ...(typeof args.year === 'number' ? { year: args.year } : {}),
+        ...(exec.signal ? { signal: exec.signal } : {}),
+      })
+      return asJson(report)
     },
   }))
 

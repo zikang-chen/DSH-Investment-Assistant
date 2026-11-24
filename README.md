@@ -52,6 +52,7 @@ npm run demo:seed      # data-demo/：示例账户、5 笔流水、2 条建议�
 - 复利规划：定投终值、不规则现金流、目标反解、通胀后购买力
 - 组合策略：当前组合 → 目标与预算 → 漂移与换手 → 保存与审批；多资产纸面再平衡与版本管理
 - 证据协作：缺资料时生成待补任务，提交后校验，再接着原来的研究
+- 数值带元信息：单位/时点/窗口/来源/新鲜度/冲突标记，缺数据就写缺失
 - 金融术语三级解释，可收藏复习
 
 ## 用法
@@ -125,6 +126,7 @@ npm run test:review-safety   # 研究正文与证据请求的竞态/丢稿
 npm run test:instrument-focus # 当前标的身份/持久化/降级
 npm run test:instrument-related # 标的关联与今日要点
 npm run test:team-plan       # 研究小组分工简报与边界
+npm run test:metric          # 数值元信息/时段/财政部曲线解析
 npm run test:backtest-builder # 回测输入装配（取价/权重/跨币种拒绝）
 npm run test:product-copy    # 可见文案只查界面文本
 npm run test:regressions     # 19 组
@@ -144,8 +146,8 @@ Windows 上 `test:offline` 与 `test:personal` 依赖 POSIX 脚本语义，会�
 | 组合回测、核验、审批 | [工作流说明](<docs/portfolio-workflows.md>) |
 | K 线、分时与事件口径 | [K 线与事件](<docs/history-kline.md>) · [Agent 分时取数](<docs/agent-intraday.md>) |
 | 本轮产品复审与改动 | [产品复审 2026-11](<docs/product-review-2026-11.md>) |
-| 竞品对照与产品重构 | [竞品与架构 2026-11](<docs/product-architecture-2026-11.md>) |
-| 多智能体编排 | [研究小组编排](<docs/multi-agent-orchestration.md>) |
+| 研究小组分工 | [分工与边界](<docs/multi-agent-orchestration.md>) |
+| 数值口径与数据缺口 | [数值元信息](<docs/data-metrics.md>) |
 | 政策与白皮书采集 | [政策采集](<docs/policy-collection.md>) |
 | 数据源与实测状态 | [数据源审计](<docs/data-source-audit.md>) · [中国免费数据集](<docs/free-cn-datasets.md>) |
 | 页面组织与跳转 | [页面跳转](<docs/product-navigation.md>) |

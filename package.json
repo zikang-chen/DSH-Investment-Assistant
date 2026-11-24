@@ -82,7 +82,8 @@
     "test:instrument-focus": "tsx scripts/test_instrument_focus.ts",
     "test:instrument-related": "tsx scripts/test_instrument_related.ts",
     "test:team-plan": "tsx scripts/test_team_plan.ts",
-    "test:backtest-builder": "tsx scripts/test_backtest_builder.ts"
+    "test:backtest-builder": "tsx scripts/test_backtest_builder.ts",
+    "test:metric": "tsx scripts/test_metric.ts"
   },
   "dsh": {
     "bundle": {

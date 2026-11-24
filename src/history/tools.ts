@@ -5,6 +5,7 @@ import type { FinanceDataService } from '../data/service.js'
 import type { PanelBus } from '../panel-bus.js'
 import type { HistoryStore } from './store.js'
 import { syncHistory, type SymbolKind } from './sync.js'
+import { metric, staleness } from '../data/metric.js'
 
 function asJson(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue
@@ -79,5 +80,50 @@ export function registerHistoryTools(ctx: Context, finance: FinanceDataService, 
     parameters: {},
     output: jsonOut,
     async execute() { return asJson({ ok: true, symbols: await store.list() }) },
+  }))
+
+  // P2-5：覆盖度报告。回答「这只票够不够做回测」，缺口按工作日估算，不冒充确定缺失。
+  ctx.tools.register(defineTool({
+    name: 'get_history_coverage',
+    description: '本地历史覆盖度：缓存了多少根 K 线、覆盖区间、疑似长缺口（≥15 个工作日）、事件数、内容哈希。用来判断「够不够算指标/做回测」，不要靠猜。缺口按工作日估算，未扣法定休市与停牌。',
+    parameters: {
+      code: { type: 'string', required: true, description: '代码，如 600519 / 00700 / AAPL' },
+      kind: { type: 'string', enum: ['a', 'hk', 'us', 'fund'], description: '市场类型，默认 a' },
+    },
+    output: jsonOut,
+    async execute(args) {
+      const code = String(args.code ?? '').trim()
+      if (!code) return asJson({ ok: false, error: 'code is required' })
+      const kind = ['a', 'hk', 'us', 'fund'].includes(String(args.kind)) ? String(args.kind) as 'a' | 'hk' | 'us' | 'fund' : 'a'
+      try {
+        const manifest = await store.manifest(code, kind)
+        if (!manifest) return asJson({ ok: false, code, kind, error: '本地没有该标的的历史' })
+        const bars = manifest.bars ?? 0
+        return asJson({
+          ok: true,
+          code, kind, bars,
+          coverage: manifest.coverage ?? null,
+          gaps: manifest.gaps ?? [],
+          events: manifest.events ?? 0,
+          eventsMissingAvailableAt: manifest.eventsMissingAvailableAt ?? 0,
+          contentHash: manifest.contentHash ?? null,
+          barCount: metric(bars, {
+            unit: '根',
+            asOf: manifest.coverage?.to ?? null,
+            window: '全库',
+            source: '本地历史库（sync_history 写入）',
+            stale: staleness(manifest.coverage?.to ?? null, 'daily'),
+            conflict: false,
+          }),
+          notes: [
+            '缺口按工作日估算，未扣法定休市/停牌，不是确定缺失。',
+            ...(bars < 60 ? ['少于 60 根，算均线或做回测前先补历史。'] : []),
+            ...(manifest.eventsMissingAvailableAt ? [`${manifest.eventsMissingAvailableAt} 个事件缺可得日，不能当回测已知信息。`] : []),
+          ],
+        })
+      } catch (error) {
+        return asJson({ ok: false, code, kind, error: error instanceof Error ? error.message : String(error) })
+      }
+    },
   }))
 }
