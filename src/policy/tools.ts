@@ -246,7 +246,7 @@ export function registerPolicyTools(ctx: Context, deps: PolicyToolDeps): void {
 
   ctx.tools.register(defineTool({
     name: 'policy_collect_official',
-    description: '程序化采集官方页面/历史归档：从允许清单内的页面出发沿「下一页」翻页，入库正文，并下载 PDF/XLS/XLSX/CSV/DOC 附件（白皮书、人民银行统计数据表等）。支持 from/to 日期区间回溯过往文件。遵守 robots.txt，不绕过登录/验证码。',
+    description: '程序化采集官方页面/历史归档：从允许清单内的页面出发沿「下一页」翻页，入库正文，并下载 PDF/XLS/XLSX/CSV/DOC 附件。有硬预算：链接数、路径前缀、URL 正则、整轮时限、渲染页数都可控；先用 dry_run 看计划再执行。默认遵守 robots.txt，可用 ignore_robots 显式关闭；不绕过登录、验证码与付费墙。',
     parameters: {
       url: { type: 'string', required: true, description: '列表页或正文页 URL（必须在允许清单主机内）' },
       maxPages: { type: 'number', description: '最多翻多少页（含首页），默认 1，上限 30' },
@@ -257,6 +257,14 @@ export function registerPolicyTools(ctx: Context, deps: PolicyToolDeps): void {
       maxAttachments: { type: 'number', description: '最多下载多少个附件，默认 20，上限 30' },
       issuer: { type: 'string', description: '发布机关（写入文档元数据）' },
       docType: { type: 'string', enum: [...POLICY_DOC_TYPES], description: '文档类型，默认 other' },
+      render_js: { type: 'boolean', description: '脚本渲染的列表页：静态抓不到条目时用本机 Chrome 渲染（默认关闭，需要本机有 Chrome）' },
+      ignore_robots: { type: 'boolean', description: '显式忽略 robots.txt（默认关闭）。仍受允许清单、1 秒间隔与体积上限约束；不绕过登录、验证码与付费墙' },
+      dry_run: { type: 'boolean', description: '只返回抓取计划（发现哪些链接、将抓哪些），不抓正文不入库；先用它确认范围' },
+      max_links: { type: 'number', description: '最多跟随多少条链接，默认 60，上限 200' },
+      path_prefix: { type: 'string', description: '只跟随该路径前缀（默认取起始页所在目录）' },
+      url_pattern: { type: 'string', description: '只跟随匹配该正则的链接（对完整 URL 匹配）' },
+      deadline_sec: { type: 'number', description: '整轮墙钟上限（秒），默认 90，上限 300' },
+      render_max_pages: { type: 'number', description: '最多渲染多少页，默认 3，上限 10' },
     },
     output: jsonOut,
     async execute(args) {
@@ -271,6 +279,14 @@ export function registerPolicyTools(ctx: Context, deps: PolicyToolDeps): void {
           ...(Number(args.maxAttachments) > 0 ? { maxAttachments: Number(args.maxAttachments) } : {}),
           ...(args.issuer ? { issuer: String(args.issuer) } : {}),
           ...(args.docType ? { docType: normDocType(args.docType) } : {}),
+          ...(args.render_js === true ? { renderJs: true } : {}),
+          ...(args.ignore_robots === true ? { ignoreRobots: true } : {}),
+          ...(args.dry_run === true ? { dryRun: true } : {}),
+          ...(Number(args.max_links) > 0 ? { maxLinks: Number(args.max_links) } : {}),
+          ...(args.path_prefix ? { pathPrefix: String(args.path_prefix) } : {}),
+          ...(args.url_pattern ? { urlPattern: String(args.url_pattern) } : {}),
+          ...(Number(args.deadline_sec) > 0 ? { deadlineMs: Number(args.deadline_sec) * 1000 } : {}),
+          ...(Number(args.render_max_pages) >= 0 ? { renderMaxPages: Number(args.render_max_pages) } : {}),
         })
         const docs = result.documents.map((d) => (d.id ? deps.store.get(d.id) : undefined)).filter((d): d is PolicyDocument => !!d)
         const mirrored = await mirror(docs)

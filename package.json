@@ -83,7 +83,9 @@
     "test:instrument-related": "tsx scripts/test_instrument_related.ts",
     "test:team-plan": "tsx scripts/test_team_plan.ts",
     "test:backtest-builder": "tsx scripts/test_backtest_builder.ts",
-    "test:metric": "tsx scripts/test_metric.ts"
+    "test:metric": "tsx scripts/test_metric.ts",
+    "test:policy-bounds": "tsx scripts/test_policy_bounds.ts",
+    "test:policy-render": "tsx scripts/test_policy_render.ts"
   },
   "dsh": {
     "bundle": {

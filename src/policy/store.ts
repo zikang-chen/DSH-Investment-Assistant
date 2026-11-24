@@ -13,7 +13,7 @@
  *   is written to `history/` before the record is replaced;
  * - parse/extraction failures keep the original snapshot and the error text.
  */
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Logger } from '../log.js'
 import {
@@ -447,7 +447,13 @@ export class PolicyStore {
   }
 
   async remove(id: string): Promise<boolean> {
-    if (!this.docs.delete(id)) return false
+    const doc = this.docs.get(id)
+    if (!doc) return false
+    this.docs.delete(id)
+    // 文档正文与历史都从磁盘删除：load() 是按 documents/ 目录重建的，
+    // 只删内存或只改索引，重新加载就会「复活」。
+    await rm(path.join(this.documentsDir, `${id}.json`), { force: true })
+    await rm(path.join(this.historyDir, id), { recursive: true, force: true })
     await this.persistIndex()
     return true
   }

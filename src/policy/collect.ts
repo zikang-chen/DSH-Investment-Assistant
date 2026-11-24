@@ -44,6 +44,8 @@ export interface CollectDeps {
   logger?: Logger
   robotsCache?: Map<string, string>
   signal?: AbortSignal
+  /** 采集正文时是否忽略 robots（由采集器显式传入；默认遵守）。 */
+  ignoreRobots?: boolean
 }
 
 export interface CollectOneInput {
@@ -79,7 +81,7 @@ function fetchOptions(deps: CollectDeps): FetchOptions {
     hosts: deps.hosts,
     timeoutMs: deps.timeoutMs,
     maxBytes: deps.maxBytes,
-    respectRobots: true,
+    respectRobots: deps.ignoreRobots !== true,
     robotsCache: deps.robotsCache,
     signal: deps.signal,
   }

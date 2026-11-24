@@ -131,6 +131,28 @@ export function discoverLinks(html: string, baseUrl: string, pattern?: string): 
   return out
 }
 
+/**
+ * 取 <title> 文本（去标签、解实体、压空白）。找不到就返回 undefined，
+ * 由调用方决定「没有标题」是否可接受，不在这里编一个。
+ */
+export function pageTitleOf(html: string): string | undefined {
+  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html ?? ''))
+  const text = normalizeText(decodeEntities((match?.[1] ?? '').replace(/<[^>]+>/g, '')))
+  return text || undefined
+}
+
+/**
+ * 导航/页脚类标题：这类链接在列表页和渲染页里到处都有，不能当政策正文。
+ * 只做保守匹配，宁可漏过滤也不误杀正常标题（正常标题通常远长于 6 字）。
+ */
+export function isNavigationTitle(title: string): boolean {
+  const text = String(title ?? '').trim()
+  if (!text) return true
+  if (text.length <= 4) return true
+  return /^(首页|网站地图|联系我们|关于我们|English|登录|注册|无障碍浏览|打印本页|关闭窗口|返回顶部|分享到|更多|下一页|上一页)$/i.test(text)
+    || /(部门网站|政府网站|友情链接|网站声明|版权声明|使用帮助|主办单位|承办单位|技术支持)/.test(text)
+}
+
 /** RSS 2.0 / Atom entries. */
 export function parseFeed(xml: string): DiscoveredLink[] {
   const s = String(xml ?? '')
