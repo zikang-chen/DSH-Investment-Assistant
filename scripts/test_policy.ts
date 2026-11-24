@@ -222,10 +222,12 @@ await test('修订版：保留旧版全文并升版本', async () => {
   assert.ok(history.includes('500亿元'), '旧版正文必须保留')
   assert.ok(!history.includes('600亿元'))
 })
-await test('robots.txt 禁止的路径被拒绝', async () => {
-  const res = await collectOne(deps, { url: `${base}/blocked/doc.html`, sourceId: 'fixture', sourceClass: 'official', issuer: '国务院', docType: 'other' })
-  assert.equal(res.ok, false)
-  assert.match(res.error ?? '', /robots/)
+await test('robots.txt 禁止的路径：默认放行，显式开启检查时拒绝', async () => {
+  const allowed = await collectOne(deps, { url: `${base}/blocked/doc.html`, sourceId: 'fixture', sourceClass: 'official', issuer: '国务院', docType: 'other' })
+  assert.equal(allowed.ok, true, '默认不检查 robots')
+  const blocked = await collectOne({ ...deps, respectRobots: true }, { url: `${base}/blocked/doc.html`, sourceId: 'fixture', sourceClass: 'official', issuer: '国务院', docType: 'other' })
+  assert.equal(blocked.ok, false)
+  assert.match(blocked.error ?? '', /robots/)
 })
 await test('源站 500：明确失败且不写入伪造文档', async () => {
   const before = store.stats().total

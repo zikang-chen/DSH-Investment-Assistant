@@ -44,8 +44,8 @@ export interface CollectDeps {
   logger?: Logger
   robotsCache?: Map<string, string>
   signal?: AbortSignal
-  /** 采集正文时是否忽略 robots（由采集器显式传入；默认遵守）。 */
-  ignoreRobots?: boolean
+  /** 采集正文时是否检查 robots。默认 false（放行）；显式 true 才检查。 */
+  respectRobots?: boolean
 }
 
 export interface CollectOneInput {
@@ -81,13 +81,25 @@ function fetchOptions(deps: CollectDeps): FetchOptions {
     hosts: deps.hosts,
     timeoutMs: deps.timeoutMs,
     maxBytes: deps.maxBytes,
-    respectRobots: deps.ignoreRobots !== true,
+    respectRobots: deps.respectRobots === true,
     robotsCache: deps.robotsCache,
     signal: deps.signal,
   }
 }
 
 /** Fetch one URL and upsert it. The only writer of `documents/` for collected content. */
+/** 标题清洗：去标签/实体/多余空白，过长截断。标题里残留标签会直接暴露在列表里。 */
+function cleanTitle(raw: string | undefined, fallback: string): string {
+  const text = String(raw ?? '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text) return fallback
+  return text.length > 120 ? `${text.slice(0, 118)}…` : text
+}
+
 export async function collectOne(deps: CollectDeps, input: CollectOneInput): Promise<CollectOneResult> {
   const log = deps.logger?.child('policy.collect')
   try {
@@ -116,14 +128,14 @@ export async function collectOne(deps: CollectDeps, input: CollectOneInput): Pro
       paragraphs = cleaned.paragraphs
       // Keep `text` and `paragraphs` in sync; the untouched page lives in the snapshot.
       text = paragraphs.join('\n\n')
-      title = meta.title || title || new URL(res.url).pathname
+      title = cleanTitle(meta.title || title, new URL(res.url).pathname)
       publishedAt = isoDay(meta.publishedAt) || publishedAt
       documentNumber = meta.documentNumber
       issuer = issuer || meta.issuer
     } else if (kind === 'text') {
       text = normalizeText(decodeBody(res.buffer, res.contentType))
       paragraphs = splitParagraphs(text)
-      title = title || new URL(res.url).pathname
+      title = cleanTitle(title, new URL(res.url).pathname)
     } else {
       parseStatus = 'failed'
       parseError = `无法识别的响应类型：${res.contentType || '未知'}`

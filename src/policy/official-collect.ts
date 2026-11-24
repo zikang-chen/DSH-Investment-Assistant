@@ -178,8 +178,8 @@ export interface OfficialCollectOptions {
   docType?: PolicyDocType
   /** 静态抓取拿不到条目时用本机 Chrome 渲染（脚本渲染的列表页）。默认关闭。 */
   renderJs?: boolean
-  /** 显式忽略 robots.txt（仍受允许清单、频率与体积上限约束）。默认 false。 */
-  ignoreRobots?: boolean
+  /** 是否检查 robots.txt。默认 false（放行）；显式 true 才检查。 */
+  respectRobots?: boolean
   /** 最多跟随多少条发现链接（默认 60，上限 200）。 */
   maxLinks?: number
   /** 只跟随该路径前缀下的链接；默认取起始 URL 的目录。 */
@@ -192,6 +192,8 @@ export interface OfficialCollectOptions {
   renderMaxPages?: number
   /** 只返回计划，不抓正文、不入库。 */
   dryRun?: boolean
+  /** 严格规则取不到条目时，按「前缀+标题长度+非导航」放宽候选链接。默认 true。 */
+  looseLinks?: boolean
 }
 
 export function inWindow(date: string | undefined, from?: string, to?: string): boolean {
@@ -267,7 +269,7 @@ export async function collectOfficialPages(deps: CollectDeps, options: OfficialC
   }
   const fetchOpts: FetchOptions = {
     hosts: deps.hosts, timeoutMs: deps.timeoutMs, maxBytes: deps.maxBytes,
-    respectRobots: options.ignoreRobots !== true, robotsCache: deps.robotsCache, signal: deps.signal,
+    respectRobots: options.respectRobots === true, robotsCache: deps.robotsCache, signal: deps.signal,
   }
   const fetchDocument = runtime.fetch ?? fetchPolicyDocument
   const importDocument = runtime.collectOne ?? collectOne
@@ -291,7 +293,7 @@ export async function collectOfficialPages(deps: CollectDeps, options: OfficialC
   let attempts = 0
   const importOne = async (url: string, title?: string, date?: string): Promise<void> => {
     await pace()
-    const one = await importDocument({ ...(deps as object), ignoreRobots: options.ignoreRobots === true } as typeof deps, {
+    const one = await importDocument({ ...(deps as object), respectRobots: options.respectRobots === true } as typeof deps, {
       url, sourceId: options.sourceId ?? 'official-page', sourceClass: 'official',
       issuer: options.issuer ?? '', docType: options.docType ?? 'other',
       titleHint: title, publishedHint: date,
@@ -314,7 +316,9 @@ export async function collectOfficialPages(deps: CollectDeps, options: OfficialC
       }
       let html = decodeBody(res.buffer, res.contentType)
       // 脚本渲染的列表页：静态 HTML 有条目就不开浏览器。
-      if (options.renderJs && looksScriptRendered(html) && renderedCount < renderMaxPages) {
+      const staticLinks = extractArticleLinks(html, res.url).length
+      // 静态页没有条目时也渲染一次：比只看像不像空壳更可靠（交易所/部委常见）。
+      if (options.renderJs && (looksScriptRendered(html) || staticLinks === 0) && renderedCount < renderMaxPages) {
         renderedCount += 1
         const render = runtime.render ?? ((target: string) => renderWithChrome(target, { signal: deps.signal }))
         try {
@@ -331,9 +335,32 @@ export async function collectOfficialPages(deps: CollectDeps, options: OfficialC
         }
       }
       result.tables += extractTables(html).length
-      for (const a of extractArticleLinks(html, res.url)) {
+      const strictArticles = extractArticleLinks(html, res.url)
+      // 严格规则为空时放宽：只接受同前缀、标题够长、非导航的链接。
+      // 前缀过窄会让链接全被过滤：为空时放宽到主机根路径重试一次，并记录。
+      let widenScope = false
+      const candidates = strictArticles.length === 0 && options.looseLinks !== false
+        ? discoverLinks(html, res.url)
+            .filter((link) => inScope(link.url) && link.url !== res.url && !isNavigationTitle(link.title) && link.title.length >= 8)
+            .map((link) => ({ url: link.url, label: link.title, ...(link.publishedAt ? { date: link.publishedAt } : {}) }))
+        : strictArticles
+      const widenedCandidates = candidates.length === 0 && options.looseLinks !== false
+        ? discoverLinks(html, res.url)
+            .filter((link) => hostAllowed(link.url, deps.hosts) && link.url !== res.url
+              && !isNavigationTitle(link.title) && link.title.length >= 8
+              && (!pattern || pattern.test(link.url)))
+            .map((link) => ({ url: link.url, label: link.title, ...(link.publishedAt ? { date: link.publishedAt } : {}) }))
+        : []
+      const widenedUrls = new Set<string>()
+      if (widenedCandidates.length && !candidates.length) {
+        widenScope = true
+        for (const item of widenedCandidates) { candidates.push(item); widenedUrls.add(item.url) }
+      }
+      void widenScope
+      for (const a of candidates) {
         if (a.url === pageUrl) continue
-        if (!inScope(a.url)) { skipped.linksOutOfScope += 1; continue }
+        // 放宽命中的链接已经过主机/标题/正则过滤，不再受路径前缀约束。
+        if (!widenedUrls.has(a.url) && !inScope(a.url)) { skipped.linksOutOfScope += 1; continue }
         if (followedLinks >= maxLinks) { skipped.overLinkBudget += 1; continue }
         followedLinks += 1
         if (!inWindow(a.date, options.from, options.to)) continue
