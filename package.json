@@ -80,7 +80,8 @@
     "test:chart-edge-cases": "tsx scripts/test_chart_edge_cases.ts",
     "test:intraday-tool": "tsx scripts/test_intraday_tool.ts",
     "test:instrument-focus": "tsx scripts/test_instrument_focus.ts",
-    "test:instrument-related": "tsx scripts/test_instrument_related.ts"
+    "test:instrument-related": "tsx scripts/test_instrument_related.ts",
+    "test:team-plan": "tsx scripts/test_team_plan.ts"
   },
   "dsh": {
     "bundle": {

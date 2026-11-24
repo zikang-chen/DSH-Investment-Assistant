@@ -15,6 +15,7 @@ import { IntradayView } from './intraday-view.js'
 import { InstrumentBar, loadFocus, normalizeFocus, saveFocus, focusQuoteKey, type InstrumentFocus } from './instrument-focus.js'
 import { InstrumentRelated } from './instrument-related.js'
 import { TodayBrief, holdingMoves } from './today-brief.js'
+import { buildTeamPlan, renderTeamPrompt } from '../team/team-plan.js'
 import { MarketChart } from './market-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
 import { CapitalWorkspace, WealthWorkspace } from './capital-workspace.js'
@@ -3422,7 +3423,7 @@ interface EvidenceDetail {
 }
 
 /** 「研究协作」页：待补证据 → 提交材料 → 校验 → 回到对话继续研究。 */
-function EvidenceInbox(props: { deliver: (text: string) => void }) {
+function EvidenceInbox(props: { deliver: (text: string) => Promise<'sent' | 'copied' | 'failed'> }) {
   const [rows, setRows] = useState<EvidenceRow[]>([])
   const [stats, setStats] = useState<{ total?: number; waiting?: number; submissions?: number }>({})
   const [statusFilter, setStatusFilter] = useState('')
@@ -3526,14 +3527,25 @@ function EvidenceInbox(props: { deliver: (text: string) => void }) {
     post(payload, '/evidence/submit')
   }
 
-  const askAgentToResume = (row: { requestId: string; title: string }): void => {
-    props.deliver([
-      '请继续之前被阻断的研究任务。',
-      `待补证据请求：${row.requestId}（${row.title}）`,
-      '先调用 evidence_research_resume 拿到恢复包，再用其中的证据复核原结论。',
-      '输出必须分开写：新增了哪些事实（带来源等级）、哪些结论因此改变、哪些仍然缺失。',
-      '不得把「用户提供」写成「官方确认」。',
-    ].join('\n'))
+  const [resumeState, setResumeState] = useState<{ requestId?: string; busy?: boolean; error?: string; sent?: boolean }>({})
+  const askAgentToResume = async (row: { requestId: string; title: string }): Promise<void> => {
+    if (resumeState.busy) return
+    setResumeState({ requestId: row.requestId, busy: true })
+    try {
+      const outcome = await props.deliver([
+        '请继续之前被阻断的研究任务。',
+        `待补证据请求：${row.requestId}（${row.title}）`,
+        '先调用 evidence_research_resume 拿到恢复包，再用其中的证据复核原结论。',
+        '输出必须分开写：新增了哪些事实（带来源等级）、哪些结论因此改变、哪些仍然缺失。',
+        '不得把「用户提供」写成「官方确认」。',
+      ].join('\n'))
+      // 投递失败要当场说清，不能按钮点完没反应。
+      setResumeState(outcome === 'sent'
+        ? { requestId: row.requestId, sent: true }
+        : { requestId: row.requestId, error: outcome === 'copied' ? '已复制到剪贴板，请在目标会话粘贴发送。' : '未能发送：请先绑定一个已打开的会话。' })
+    } catch (error) {
+      setResumeState({ requestId: row.requestId, error: error instanceof Error ? error.message : String(error) })
+    }
   }
 
   const active = detail?.ok && detail.request?.requestId === selected ? detail.request : undefined
@@ -3616,7 +3628,19 @@ function EvidenceInbox(props: { deliver: (text: string) => void }) {
       h('div', { style: { display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' } },
         h('button', { style: S.btn, disabled: busy, onClick: submitMaterial }, busy ? '提交中…' : '提交'),
         h('button', { style: S.btn, disabled: busy, onClick: () => post({ requestId: active.requestId, action: 'skip', note: '暂时找不到' }, '/evidence/resolve') }, '暂时找不到'),
-        active.status === 'ACCEPTED' ? h('button', { style: { ...S.btn, borderColor: BRAND, color: BRAND }, onClick: () => askAgentToResume(active) }, '交给对话继续研究') : null),
+        active.status === 'ACCEPTED'
+          ? h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+              h('button', {
+                style: { ...S.btn, borderColor: BRAND, color: BRAND },
+                disabled: resumeState.requestId === active.requestId && resumeState.busy,
+                onClick: () => void askAgentToResume(active),
+              }, resumeState.requestId === active.requestId && resumeState.busy ? '投递中…'
+                : resumeState.requestId === active.requestId && resumeState.sent ? '已投递到对话'
+                : '交给对话继续研究'),
+              resumeState.requestId === active.requestId && resumeState.error
+                ? h('span', { role: 'alert', style: { color: DANGER, fontSize: 11 } }, resumeState.error)
+                : null)
+          : null),
 
       submissions.length > 0 ? h('div', { style: { marginTop: 12 } },
         h('div', { style: S.title }, '已提交记录'),
@@ -4385,6 +4409,12 @@ function PanelBody(props: {
       onOpenResearch: (id) => { if (selectTab('research')) setResearchFocus(String(id)) },
       onOpenAdvice: (id) => { if (selectTab('advice')) setAdviceSelection(id) },
       onAsk: () => askFocus(focus),
+      onTeam: () => {
+        try {
+          const plan = buildTeamPlan({ target: `${focus.name ?? ''}${focus.name ? ' ' : ''}${focus.code}`.trim() })
+          void deliverToChat(renderTeamPrompt(plan))
+        } catch (error) { setAgentSaved({ text: error instanceof Error ? error.message : String(error), at: Date.now() }) }
+      },
     }) : null,
     h('div', { className: 'fia-panel-content' },
       tab === 'home' ? h(TodayBrief, {

@@ -43,6 +43,8 @@ export function InstrumentRelated(props: {
   onOpenResearch: (id: string) => void
   onOpenAdvice: (id: string) => void
   onAsk: () => void
+  /** 把「研究小组」的分工提示词投递到对话；不自动执行。 */
+  onTeam?: () => void
 }) {
   const { code, name, get } = props
   const [state, setState] = useState<RelatedState>({ research: { items: [], total: 0 }, advice: { items: [], scanned: 0 } })
@@ -99,7 +101,10 @@ export function InstrumentRelated(props: {
       h('button', { type: 'button', onClick: () => setNonce((n) => n + 1),
         style: { padding: '2px 8px', borderRadius: 999, border: '1px solid var(--fia-border)', background: 'transparent', fontSize: 11, cursor: 'pointer' } }, '刷新'),
       h('button', { type: 'button', onClick: props.onAsk,
-        style: { padding: '2px 8px', borderRadius: 999, border: '1px solid var(--fia-border)', background: 'transparent', fontSize: 11, cursor: 'pointer' } }, '让 Agent 研究')),
+        style: { padding: '2px 8px', borderRadius: 999, border: '1px solid var(--fia-border)', background: 'transparent', fontSize: 11, cursor: 'pointer' } }, '让 Agent 研究'),
+      props.onTeam ? h('button', { type: 'button', onClick: props.onTeam,
+        title: '研究员 / 交易员 / 风控 三份简报，汇总后给你确认',
+        style: { padding: '2px 8px', borderRadius: 999, border: '1px solid var(--fia-border)', background: 'transparent', fontSize: 11, cursor: 'pointer' } }, '团队分工') : null),
     section('资料', state.research.error
       ? h('span', { role: 'alert', style: { color: 'var(--fia-danger)' } }, state.research.error)
       : state.research.items.length
