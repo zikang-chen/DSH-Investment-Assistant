@@ -122,6 +122,7 @@ npm run test:intraday        # 分时 5 套（解析/完整性/图形模型/Agen
 npm run test:market-integrity # 行情身份、时效、超时与取消、图表边界
 npm run test:portfolio       # 组合策略 6 套
 npm run test:review-safety   # 研究正文与证据请求的竞态/丢稿
+npm run test:instrument-focus # 当前标的身份/持久化/降级
 npm run test:product-copy    # 可见文案只查界面文本
 npm run test:regressions     # 19 组
 npm run test:quant           # 28
@@ -140,6 +141,7 @@ Windows 上 `test:offline` 与 `test:personal` 依赖 POSIX 脚本语义，会�
 | 组合回测、核验、审批 | [工作流说明](<docs/portfolio-workflows.md>) |
 | K 线、分时与事件口径 | [K 线与事件](<docs/history-kline.md>) · [Agent 分时取数](<docs/agent-intraday.md>) |
 | 本轮产品复审与改动 | [产品复审 2026-11](<docs/product-review-2026-11.md>) |
+| 竞品对照与产品重构 | [竞品与架构 2026-11](<docs/product-architecture-2026-11.md>) |
 | 政策与白皮书采集 | [政策采集](<docs/policy-collection.md>) |
 | 数据源与实测状态 | [数据源审计](<docs/data-source-audit.md>) · [中国免费数据集](<docs/free-cn-datasets.md>) |
 | 页面组织与跳转 | [页面跳转](<docs/product-navigation.md>) |

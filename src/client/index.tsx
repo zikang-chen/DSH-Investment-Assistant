@@ -12,6 +12,7 @@ import { PortfolioStrategy } from './portfolio-strategy.js'
 import { CnDatasetsPanel } from './cn-datasets-panel.js'
 import { KlineChart } from './kline-chart.js'
 import { IntradayView } from './intraday-view.js'
+import { InstrumentBar, loadFocus, normalizeFocus, saveFocus, focusQuoteKey, type InstrumentFocus } from './instrument-focus.js'
 import { MarketChart } from './market-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
 import { CapitalWorkspace, WealthWorkspace } from './capital-workspace.js'
@@ -1251,6 +1252,8 @@ function QuotesView(props: {
   onSelectKline?: (code: string, type?: AssetType) => void
   /** K线工作区目标（面板导航/「在行情页看K线」共用；at 变化重新加载）。 */
   klineTarget?: ChartTarget
+  /** 面板级回调：把当前标的同步到上下文条。 */
+  onFocusChart?: (code: string, kind: string) => void
 }) {
   const { data, quoteBy, loading, mutate } = props
   const [wCode, setWCode] = useState('')
@@ -1321,7 +1324,7 @@ function QuotesView(props: {
       ]),
     h('div', { ref: chartRef }, props.klineTarget?.secid && isGlobalSecurity({ ...props.klineTarget, type: props.klineTarget.kind === 'fund' ? 'fund' : 'stock' })
       ? h(GlobalSecurityChart, { key: props.klineTarget.secid, target: props.klineTarget, get: apiGet })
-      : h(KlineView, { data, requested: props.klineTarget })),
+      : h(KlineView, { data, requested: props.klineTarget, onFocus: props.onFocusChart })),
     h('div', { style: { ...S.muted, fontSize: 11, display: 'flex', gap: 8, flexWrap: 'wrap', padding: '0 2px' } },
       h('span', null, '数据优先 WeStock（本地 CLI，批量取）；不通时自动回落东财/腾讯。'),
       perf ? h('span', null, `本次缓存命中 ${perf.cacheHits}/${perf.calls + perf.cacheHits} · 平均 ${perf.avgLatencyMs}ms${perf.coalesced ? ` · 合并请求 ${perf.coalesced}` : ''}`) : null))
@@ -1908,7 +1911,7 @@ function KlineStats(props: { kline: HistBar[] }) {
     item('最新', last.close.toFixed(2), colorOf(last.close - first.close)))
 }
 
-function KlineView(props: { data: LiveData; requested?: { code: string; kind: string; at: number } }) {
+function KlineView(props: { data: LiveData; requested?: { code: string; kind: string; at: number; mode?: 'daily' | 'intraday' }; onFocus?: (code: string, kind: string) => void }) {
   const [code, setCode] = useState('')
   const [kind, setKind] = useState('a')
   const [hist, setHist] = useState<{ kline: HistBar[]; events: HistEvent[]; updatedAt?: string } | null>(null)
@@ -1937,6 +1940,8 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
     const seq = ++requestSeq.current
     // Never show the previous identity's chart under a newly entered code.
     setLoaded({ code: c, kind: k }); setHist(null); setManifest(null); setHistError('')
+    // 让面板知道「现在在看哪只」，其它页面的上下文条与跳转都跟着它走。
+    props.onFocus?.(c, k)
     try {
       const r = await apiGet<{ ok: boolean; kline?: HistBar[]; events?: HistEvent[]; updatedAt?: string }>(`/history?code=${encodeURIComponent(c)}&kind=${encodeURIComponent(k)}`)
       if (requestSeq.current !== seq) return
@@ -2003,6 +2008,8 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
     if (!req) return
     setCode(req.code)
     if (['a', 'hk', 'us', 'fund'].includes(req.kind)) setKind(req.kind)
+    // 从上下文条直接进入分时，不用再手动切一次。
+    setView(req.mode === 'intraday' ? 'intraday1' : 'kline')
     setHint('')
     void load(req.code, req.kind)
   }, [props.requested?.at])
@@ -4048,6 +4055,13 @@ function PanelBody(props: {
   const [holdingDraft, setHoldingDraft] = useState<HoldingEntryDraft>(() => emptyHoldingDraft())
   /** 数据源页有未保存草稿时，切走前显式确认，不能静默丢弃。 */
   const [sourcesDirty, setSourcesDirty] = useState(false)
+  /** 当前标的：一次选中，K线/分时/档案/提问都围绕它，切页不丢。 */
+  const [focus, setFocusState] = useState<InstrumentFocus | undefined>(() => loadFocus())
+  const setFocus = useCallback((input: Parameters<typeof normalizeFocus>[0] | undefined) => {
+    const next = input ? normalizeFocus(input) : undefined
+    setFocusState(next); saveFocus(next)
+    return next
+  }, [])
   const selectTab = useCallback((id: string, preserveReturn = false): boolean => {
     if (!TABS.some(t => t.id === id)) return false
     if (id !== tab && tab === 'sources' && sourcesDirty && !window.confirm('数据源页有未保存的草稿，离开将丢失。仍要离开？')) return false
@@ -4184,6 +4198,26 @@ function PanelBody(props: {
   for (const q of data.quotes) quoteBy.set(keyOf(q.code, q.type ?? 'stock'), q)
   rememberNames([...data.watchlist, ...data.holdings, ...data.quotes])
   const agoText = useAgo(data.at)
+  const focusQuote = focus ? quoteBy.get(keyOf(focus.code, focus.kind === 'fund' ? 'fund' : 'stock')) : undefined
+  const openFocusDossier = (target: InstrumentFocus) => {
+    if (!selectTab('dossier')) return
+    setDossierTarget({
+      code: target.code,
+      ...(target.name ? { name: target.name } : {}),
+      type: target.kind === 'fund' ? 'fund' : 'stock',
+      ...(target.secid ? { secid: target.secid } : {}),
+      at: Date.now(),
+    })
+  }
+  const askFocus = (target: InstrumentFocus) => {
+    props.onOpenAnalysis({ code: target.code, type: target.kind === 'fund' ? 'fund' : 'stock', ...(target.name ? { name: target.name } : {}) })
+  }
+  const openFocusChart = (target: InstrumentFocus, mode: 'daily' | 'intraday') => {
+    if (!selectTab('quotes')) return
+    setChartFromDossier(false)
+    const kind = target.kind === 'fund' ? 'fund' : target.kind === 'global' ? 'us' : target.kind
+    setKlineTarget({ code: target.code, kind, ...(target.name ? { name: target.name } : {}), ...(target.secid ? { secid: target.secid } : {}), at: Date.now(), ...(mode === 'intraday' ? { mode } : {}) })
+  }
   const panelWidth = usePanelWidth()
   const portfolioSnapshot = {
     at: data.at,
@@ -4307,6 +4341,15 @@ function PanelBody(props: {
         liveAt ? ` · 仍显示 ${liveAt.slice(5, 16).replace('T', ' ')} 的报价` : ''),
       h('button', { style: { ...S.btn, padding: '2px 8px' }, onClick: () => { void loadState(); void loadLive() } }, '重试')) : null,
     h(SessionPicker, null),
+    focus ? h(InstrumentBar, {
+      focus,
+      quote: focusQuote,
+      ...(data.at ? { liveAt: data.at } : {}),
+      onOpenChart: openFocusChart,
+      onOpenDossier: openFocusDossier,
+      onAsk: askFocus,
+      onClear: () => setFocus(undefined),
+    }) : null,
     h('div', { className: 'fia-panel-content' },
       tab === 'home' ? h(OverviewWorkbench, { navigate: selectTab, deliver: deliverToChat, get: apiGet, useBus,
         marketSummary: data.indices.length ? h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } }, data.indices.slice(0, 3).map(ix => h(IndexCard, { key: ix.code, ix }))) : h('p', { style: S.muted }, '暂无可用指数行情；打开行情页重试。'),
@@ -4320,8 +4363,9 @@ function PanelBody(props: {
       tab === 'quotes' && chartFromDossier ? h('button', { style: S.btn, onClick: () => { if (selectTab('dossier', true)) { if (chartOrigin) setDossierTarget({ ...chartOrigin, at: Date.now() }); setChartFromDossier(false) } } }, '← 返回证券档案') : null,
       tab === 'quotes' ? h(QuotesView, {
         data, quoteBy, loading, mutate, onOpen: props.onOpenAnalysis, onRefresh: () => void loadLive(),
-        onSelectKline: (code, type) => { setChartFromDossier(false); setKlineTarget(chartTargetFor({ code, type: type ?? 'stock' }, Date.now())) },
+        onSelectKline: (code, type) => { setChartFromDossier(false); setFocus({ code, type: type ?? 'stock' }); setKlineTarget(chartTargetFor({ code, type: type ?? 'stock' }, Date.now())) },
         klineTarget,
+        onFocusChart: (code, kind) => setFocus({ code, kind }),
       }) : null,
       tab === 'holdings' ? h(HoldingsView, { data, quoteBy, mutate, onOpen: props.onOpenAnalysis, holdingDraft, onHoldingDraftChange: setHoldingDraft }) : null,
       tab === 'funds' ? h(FundWorkspace, { get: apiGet, active: tab === 'funds', onOpenFund: (item) => { if (!selectTab('dossier')) return; setSecurityReturnTab('funds'); setDossierTarget({ ...item, at: Date.now() }) } }) : null,
@@ -4352,9 +4396,9 @@ function PanelBody(props: {
         initial: dossierTarget ? undefined : klineTarget?.code,
         initialType: klineTarget?.kind === 'fund' ? 'fund' : 'stock',
         requested: dossierTarget ? { ...dossierTarget, type: dossierTarget.type ?? 'stock' } : undefined,
-        onSelect: (item) => setDossierTarget({ ...item, at: Date.now() }),
+        onSelect: (item) => { setDossierTarget({ ...item, at: Date.now() }); setFocus(item) },
         onBack: () => selectTab(securityReturnTab),
-        onChart: (item) => { if (!selectTab('quotes')) return; setChartFromDossier(true); setChartOrigin(item); setKlineTarget(chartTargetFor(item, Date.now())) },
+        onChart: (item) => { if (!selectTab('quotes')) return; setChartFromDossier(true); setChartOrigin(item); setFocus(item); setKlineTarget(chartTargetFor(item, Date.now())) },
       }) : null,
       tab === 'discover' ? h(DiscoverView, null) : null,
       tab === 'follow' ? h(FollowView, null) : null,
