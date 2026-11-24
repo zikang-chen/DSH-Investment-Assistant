@@ -2,13 +2,15 @@
  * Collection pipeline:
  *   discover → fetch → immutable snapshot → hash → extract → dedupe/version → index
  *
- * Every step that can fail records why. A failed document keeps its snapshot and
- * an error string; it is never silently dropped, and a retry is idempotent
- * because dedupe is keyed on content, not on the run.
+ * Every step that can fail records why. Extraction/quality failures are returned
+ * without inserting a document; PDFs keep an explicitly pending raw snapshot.
+ * A retry is idempotent because dedupe is keyed on content, not on the run.
  */
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Logger } from '../log.js'
+import { bodyQuality } from './body-quality.js'
+export { bodyQuality } from './body-quality.js'
 import {
   fetchPolicyDocument,
   sha256Hex,
@@ -21,6 +23,7 @@ import {
   discoverLinks,
   extractHtmlMeta,
   htmlToText,
+  isNavigationTitle,
   parseFeed,
   type DiscoveredLink,
 } from './extract.js'
@@ -46,6 +49,8 @@ export interface CollectDeps {
   signal?: AbortSignal
   /** 采集正文时是否检查 robots。默认 false（放行）；显式 true 才检查。 */
   respectRobots?: boolean
+  /** Additional crawl boundary, also enforced before every redirect request. */
+  validateUrl?: (url: string) => boolean
 }
 
 export interface CollectOneInput {
@@ -65,6 +70,8 @@ export interface CollectOneResult {
   doc?: PolicyDocument
   reason?: string
   error?: string
+  /** Extraction/quality rejection; no document was inserted. */
+  parseStatus?: 'parse_failed'
 }
 
 export interface CollectRunResult {
@@ -84,24 +91,12 @@ function fetchOptions(deps: CollectDeps): FetchOptions {
     respectRobots: deps.respectRobots === true,
     robotsCache: deps.robotsCache,
     signal: deps.signal,
+    validateUrl: deps.validateUrl,
   }
 }
 
-/** Fetch one URL and upsert it. The only writer of `documents/` for collected content. */
-/** 页面样板词：命中 ≥2 个说明抓到的是页脚/备案/版权，不是正文。 */
-const BOILERPLATE_MARKERS = ['ICP备', '网站标识码', '版权所有', '主办单位', '京公网安备', '网站地图', '联系我们']
-
-/**
- * 正文质量闸门：太短或样板词过多都判 parse_failed，不当作政策正文入库。
- * 阈值写死在这里，调用方不能放宽——否则每跑一次就污染一次资料库。
- */
-export function bodyQuality(text: string): { ok: boolean; chars: number; markers: number; reason?: string } {
-  const body = String(text ?? '').replace(/\s+/g, '')
-  const chars = body.length
-  const markers = BOILERPLATE_MARKERS.filter((marker) => body.includes(marker)).length
-  if (chars < 300) return { ok: false, chars, markers, reason: `正文过短（${chars} 字 < 300）` }
-  if (markers >= 2) return { ok: false, chars, markers, reason: `正文疑似页脚/备案信息（命中 ${markers} 个样板词）` }
-  return { ok: true, chars, markers }
+function checkActive(deps: CollectDeps): void {
+  deps.signal?.throwIfAborted()
 }
 
 /** 标题清洗：去标签/实体/多余空白，过长截断。标题里残留标签会直接暴露在列表里。 */
@@ -125,10 +120,11 @@ export async function collectOne(deps: CollectDeps, input: CollectOneInput, runt
   const log = deps.logger?.child('policy.collect')
   try {
     const fetchDocument = runtime.fetch ?? fetchPolicyDocument
+    checkActive(deps)
     const res = await fetchDocument(input.url, fetchOptions(deps))
+    checkActive(deps)
     const kind = detectPayloadKind(res.contentType, res.buffer)
     const rawHash = sha256Hex(res.buffer)
-    const original = await deps.store.saveOriginal(res.buffer, res.contentType, rawHash)
 
     let text = ''
     let paragraphs: string[] = []
@@ -163,21 +159,20 @@ export async function collectOne(deps: CollectDeps, input: CollectOneInput, runt
       parseError = `无法识别的响应类型：${res.contentType || '未知'}`
     }
 
-    if (!text && parseStatus === 'ok') {
-      parseStatus = 'failed'
-      parseError = '正文为空（页面可能依赖脚本渲染）'
-    }
-
-    if (parseStatus === 'ok' && kind !== 'pdf') {
+    if (parseStatus === 'failed') return { url: input.url, ok: false, parseStatus: 'parse_failed', error: parseError }
+    if (parseStatus === 'ok') {
       const quality = bodyQuality(text)
-      if (!quality.ok) {
-        // 质量不达标就不入库：宁可少一篇，也不要往政策库里塞页脚与备案号。
-        const reason = quality.reason ?? '正文质量不达标'
+      const reason = !quality.ok ? quality.reason
+        : isNavigationTitle(title) ? '栏目/导航页面不是政策正文' : undefined
+      if (reason) {
         log?.warn('body rejected', { url: res.url, chars: quality.chars, markers: quality.markers, reason })
-        return { url: input.url, ok: false, error: `正文质量不达标：${reason}` }
+        return { url: input.url, ok: false, parseStatus: 'parse_failed', error: `正文质量不达标：${reason}` }
       }
     }
 
+    checkActive(deps)
+    const original = await deps.store.saveOriginal(res.buffer, res.contentType, rawHash)
+    checkActive(deps)
     const result = await deps.store.upsert({
       title: title || '未命名政策文件',
       canonicalUrl: res.url,
@@ -190,7 +185,7 @@ export async function collectOne(deps: CollectDeps, input: CollectOneInput, runt
       publishedAt,
       text,
       paragraphs: paragraphs.length > 0 ? paragraphs : splitParagraphs(text),
-      contentHash: sha256Hex(`${normalizeText(text)}|${documentNumber}`),
+      contentHash: parseStatus === 'pdf-pending' ? rawHash : sha256Hex(`${normalizeText(text)}|${documentNumber}`),
       originalPath: original.path,
       originalBytes: res.bytes,
       originalContentType: res.contentType,
@@ -323,10 +318,19 @@ export async function importText(deps: CollectDeps, input: {
   parseStatus?: PolicyDocument['parseStatus']
   parseError?: string
 }): Promise<CollectOneResult> {
+  checkActive(deps)
   const text = normalizeText(input.text)
+  const parseStatus = input.parseStatus ?? 'ok'
+  if (parseStatus !== 'pdf-pending') {
+    const quality = bodyQuality(text)
+    const reason = parseStatus !== 'ok' ? input.parseError || '正文解析失败'
+      : !quality.ok ? quality.reason : isNavigationTitle(input.title) ? '栏目/导航页面不是政策正文' : undefined
+    if (reason) return { url: input.sourceUrl ?? 'manual:', ok: false, parseStatus: 'parse_failed', error: `正文质量不达标：${reason}` }
+  }
   const buffer = input.originalBuffer ?? Buffer.from(text, 'utf8')
   const rawHash = sha256Hex(buffer)
   const original = await deps.store.saveOriginal(buffer, input.originalContentType ?? 'text/plain; charset=utf-8', rawHash)
+  checkActive(deps)
   const result = await deps.store.upsert({
     title: input.title,
     canonicalUrl: input.sourceUrl ?? `manual:${rawHash.slice(0, 16)}`,
@@ -339,7 +343,7 @@ export async function importText(deps: CollectDeps, input: {
     publishedAt: input.publishedAt ?? '',
     text,
     paragraphs: splitParagraphs(text),
-    contentHash: sha256Hex(`${text}|${input.documentNumber ?? ''}`),
+    contentHash: parseStatus === 'pdf-pending' ? rawHash : sha256Hex(`${text}|${input.documentNumber ?? ''}`),
     originalPath: original.path,
     originalBytes: original.bytes,
     originalContentType: input.originalContentType ?? 'text/plain; charset=utf-8',

@@ -12,6 +12,10 @@
  */
 
 import { httpGetJson } from './http.js'
+import {
+  fetchSinaFuturesKline, sinaFuturesInstrument,
+  type FuturesInstrument, type FuturesKlineDiagnostics,
+} from './sina-global-futures.js'
 
 export const GLOBAL_QUOTE_TIMEOUT_MS = 12_000
 export const GLOBAL_QUOTE_CACHE_TTL_MS = 30_000
@@ -113,7 +117,7 @@ export function globalQuoteUrl(secid: string): string {
   return `https://push2.eastmoney.com/api/qt/stock/get?secid=${encodeURIComponent(secid)}&fltt=2&invt=2&fields=${fields}`
 }
 
-export interface GlobalBar { date: string; open: number; high: number; low: number; close: number; volume: number }
+export interface GlobalBar { date: string; open: number; high: number; low: number; close: number; /** 源侧没有量时为 null，不当成 0 成交。 */ volume: number | null }
 
 export interface GlobalKlineResult {
   ok: boolean
@@ -122,7 +126,13 @@ export interface GlobalKlineResult {
   name?: string
   bars: GlobalBar[]
   error?: string
-  source: 'eastmoney-push2' | 'tencent-kline'
+  source: 'eastmoney-push2' | 'tencent-kline' | 'sina-global-futures'
+  /** 新浪 GC 是 CFD，不是所请求的 COMEX 交易所合约。 */
+  instrument?: FuturesInstrument
+  /** 东财失败、但用户尚未显式选择代理走势时供 UI 展示入口；不会自动取代理数据。 */
+  availableProxy?: FuturesInstrument
+  warnings?: string[]
+  diagnostics?: FuturesKlineDiagnostics
 }
 
 /**
@@ -130,6 +140,7 @@ export interface GlobalKlineResult {
  * 只映射腾讯确有连续日线的品种：美股三大指数、恒指与恒生科技、沪深指数。
  * 100.NDX 在东财返回的其实是纳斯达克综合指数（与腾讯 usIXIC 同一数值），故按 usIXIC 取。
  * 其余品种（日经、欧洲、商品、美元指数）腾讯没有同日线，保持东财失败即报错。
+ * 黄金可在用户显式选择后另看新浪 CFD 参考走势，但绝不当作等价合约自动回落。
  */
 export const TX_GLOBAL_KLINE_SYMBOL: Readonly<Record<string, string>> = {
   '100.SPX': 'usINX',
@@ -223,6 +234,10 @@ export function parseGlobalKline(secid: string, payload: unknown): GlobalKlineRe
 
 export interface GlobalQuoteFetchOptions {
   fetchJson?: (url: string, init?: { signal?: AbortSignal; timeoutMs?: number }) => Promise<unknown>
+  /** 注入口径为文本的源（新浪期货 JSONP）；缺省走真实网络。 */
+  fetchText?: (url: string, signal?: AbortSignal) => Promise<string>
+  /** 默认 false；显式允许在东财失败后查看非等价的新浪黄金 CFD 参考走势。 */
+  allowProxyFallback?: boolean
   now?: () => number
   cache?: Map<string, { at: number; value: GlobalQuoteResult }>
   signal?: AbortSignal
@@ -256,28 +271,50 @@ export async function fetchGlobalQuote(secidInput: unknown, options: GlobalQuote
 export async function fetchGlobalKline(secidInput: unknown, limit: unknown = GLOBAL_KLINE_DEFAULT_BARS, options: GlobalQuoteFetchOptions = {}): Promise<GlobalKlineResult> {
   const secid = normalizeSecid(secidInput)
   if (!secid) return { ok: false, error: `无效的 secid：${String(secidInput)}`, bars: [], source: 'eastmoney-push2' }
-  if (options.signal?.aborted) throw options.signal.reason ?? new Error('aborted')
+  const throwIfAborted = () => { if (options.signal?.aborted) throw options.signal.reason ?? new Error('aborted') }
+  throwIfAborted()
+  const count = clampGlobalKlineBars(limit)
   const fetchJson = options.fetchJson ?? defaultFetchJson
   let emError = ''
   try {
-    const payload = await fetchJson(globalKlineUrl(secid, clampGlobalKlineBars(limit)), { signal: options.signal })
+    const payload = await fetchJson(globalKlineUrl(secid, count), { signal: options.signal })
+    throwIfAborted()
     const parsed = parseGlobalKline(secid, payload)
-    if (parsed.ok && parsed.bars.length) return parsed
+    if (parsed.ok && parsed.bars.length) return { ...parsed, bars: parsed.bars.slice(-count) }
     emError = parsed.error ?? '东财未返回日K'
   } catch (err) {
+    throwIfAborted()
     emError = err instanceof Error ? err.message : String(err)
   }
-  // 东财被限流/重置时改用腾讯日K；没有映射的品种如实返回东财的失败原因。
-  if (options.signal?.aborted) throw options.signal.reason ?? new Error('aborted')
+  // 东财源故障才尝试等价腾讯指数备源；调用方取消不得继续启动后续网络请求。
+  throwIfAborted()
   const symbol = TX_GLOBAL_KLINE_SYMBOL[secid]
   if (!symbol) {
-    return { ok: false, secid, bars: [], error: `东财日K不可用（${emError}），该品种没有备用源`, source: 'eastmoney-push2' }
+    const availableProxy = sinaFuturesInstrument(secid)
+    if (!availableProxy) {
+      return { ok: false, secid, bars: [], error: `东财日K不可用（${emError}），该品种没有备用源`, source: 'eastmoney-push2' }
+    }
+    if (options.allowProxyFallback !== true) {
+      return { ok: false, secid, bars: [], availableProxy, error: `东财日K不可用（${emError}）；可选新浪纽约黄金CFD参考走势，不等同COMEX黄金期货，需显式选择`, source: 'eastmoney-push2' }
+    }
+    const futures = await fetchSinaFuturesKline(secid, count, {
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.fetchText ? { fetchText: options.fetchText } : {}),
+    })
+    throwIfAborted()
+    // 保留代理身份与坏行诊断；只返回独立新浪序列，绝不与东财价格拼接。
+    return futures.ok ? futures : {
+      ...futures, availableProxy,
+      error: `东财日K与新浪黄金CFD参考走势都不可用：${emError} / ${futures.error ?? ''}`,
+    }
   }
   try {
-    const payload = await fetchJson(tencentKlineUrl(symbol, clampGlobalKlineBars(limit)), { signal: options.signal })
+    const payload = await fetchJson(tencentKlineUrl(symbol, count), { signal: options.signal })
+    throwIfAborted()
     const fallback = parseTencentGlobalKline(secid, payload)
-    return fallback.ok ? fallback : { ...fallback, error: `东财不可用（${emError}）；${fallback.error ?? ''}` }
+    return fallback.ok ? { ...fallback, bars: fallback.bars.slice(-count) } : { ...fallback, error: `东财不可用（${emError}）；${fallback.error ?? ''}` }
   } catch (err) {
+    throwIfAborted()
     return { ok: false, secid, bars: [], error: `东财与腾讯日K都不可用：${emError} / ${err instanceof Error ? err.message : String(err)}`, source: 'eastmoney-push2' }
   }
 }

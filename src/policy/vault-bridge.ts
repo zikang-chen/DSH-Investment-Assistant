@@ -8,6 +8,7 @@
  * timestamped note instead of overwriting the previous judgement.
  */
 import type { ResearchVault, ResearchItem } from '../research/store.js'
+import { policyBodyIssue } from './body-quality.js'
 import { policyEvidenceLevel, EVIDENCE_LABEL, citationCaveat } from './evidence.js'
 import { excerpt, type PolicyDocument } from './types.js'
 
@@ -100,6 +101,8 @@ export interface MirrorResult {
 
 /** Create or refresh the vault note for one policy document. */
 export async function mirrorPolicyToVault(vault: ResearchVault, doc: PolicyDocument): Promise<MirrorResult> {
+  const issue = policyBodyIssue(doc)
+  if (issue && doc.parseStatus !== 'pdf-pending') throw new Error(`政策正文不可归档为有效资料：${issue}`)
   const grade = policyEvidenceLevel(doc)
   const summary = `政策 · ${docTypeLabel(doc.docType)} · 证据 ${grade.level} · v${doc.version}`
   const title = `${doc.title}`.slice(0, 120)

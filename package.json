@@ -86,7 +86,11 @@
     "test:metric": "tsx scripts/test_metric.ts",
     "test:policy-bounds": "tsx scripts/test_policy_bounds.ts",
     "test:policy-render": "tsx scripts/test_policy_render.ts",
-    "test:policy-body-gate": "tsx scripts/test_policy_body_gate.ts"
+    "test:policy-body-gate": "tsx scripts/test_policy_body_gate.ts",
+    "test:vault-index": "tsx scripts/test_vault_index.ts",
+    "test:sina-futures": "tsx scripts/test_sina_futures.ts",
+    "test:gold-proxy-ui": "tsx scripts/test_gold_proxy_ui.ts",
+    "test:research-evidence": "tsx scripts/test_research_evidence.ts"
   },
   "dsh": {
     "bundle": {

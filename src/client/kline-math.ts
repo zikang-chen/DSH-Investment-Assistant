@@ -8,7 +8,7 @@ export interface RawBar {
   high: number
   low: number
   close: number
-  volume: number
+  volume: number | null
 }
 
 export type KlinePeriod = 'day' | 'week' | 'month'
@@ -41,7 +41,7 @@ function addDays(d: Date, n: number): Date {
   return new Date(d.getTime() + n * 86_400_000)
 }
 
-/** 清洗：丢弃非有限值/坏日期，成交量非有限按 0，按日期升序、同日保留最后一条。 */
+/** 清洗：丢弃非有限值/坏日期，缺成交量保留 null，按日期升序、同日保留最后一条。 */
 export function sanitizeBars(bars: RawBar[]): RawBar[] {
   const byDate = new Map<string, RawBar>()
   for (const b of bars) {
@@ -56,7 +56,7 @@ export function sanitizeBars(bars: RawBar[]): RawBar[] {
       high,
       low,
       close: b.close,
-      volume: Number.isFinite(b.volume) && b.volume > 0 ? b.volume : 0,
+      volume: typeof b.volume === 'number' && Number.isFinite(b.volume) && b.volume >= 0 ? b.volume : null,
     })
   }
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date))
@@ -139,7 +139,7 @@ export function aggregateBars(bars: RawBar[], period: KlinePeriod): AggBar[] {
       close: last.close,
       high: Math.max(...g.map((x) => x.high)),
       low: Math.min(...g.map((x) => x.low)),
-      volume: g.reduce((s, x) => s + x.volume, 0),
+      volume: g.some(x => x.volume === null) ? null : g.reduce((s, x) => s + (x.volume ?? 0), 0),
       count: g.length,
       periodEnd: periodEnd(first.date, period),
       unfinished: false,
@@ -248,7 +248,7 @@ export function priceRange(bars: RawBar[], mas?: MaSeries[]): { min: number; max
 }
 
 export function volumeRange(bars: RawBar[]): { min: number; max: number } {
-  const max = Math.max(1, ...bars.map((b) => b.volume))
+  const max = Math.max(1, ...bars.flatMap(b => typeof b.volume === 'number' && Number.isFinite(b.volume) ? [b.volume] : []))
   return { min: 0, max }
 }
 
@@ -313,8 +313,8 @@ export function palette(colorBlind: boolean): KlinePalette {
     }
 }
 
-export function formatVolume(v: number): string {
-  if (!Number.isFinite(v)) return '-'
+export function formatVolume(v: number | null): string {
+  if (v === null || !Number.isFinite(v)) return '—'
   if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿`
   if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万`
   return v.toFixed(0)

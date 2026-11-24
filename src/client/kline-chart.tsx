@@ -170,9 +170,9 @@ export function KlineChart(props: KlineChartProps) {
       ctx.fill()
     })
 
-    // 成交量柱（涨跌染色；零量/停牌不画柱）
+    // 成交量柱（涨跌染色；缺量或零量不画柱，tooltip 区分 — 与 0）
     visible.forEach((b, i) => {
-      if (!(b.volume > 0)) return
+      if (b.volume === null || !(b.volume > 0)) return
       const up = b.close >= b.open
       ctx.fillStyle = up ? pal.up : pal.down
       ctx.globalAlpha = 0.5

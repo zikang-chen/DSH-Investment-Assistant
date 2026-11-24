@@ -10,7 +10,7 @@ const deps = {
   robotsCache: new Map<string, string>(),
   store: { saveOriginal: async () => ({ path: 'memory://attachment', bytes: 4 }) },
 } as unknown as CollectDeps
-const paragraphs = '<p>第一段正文</p><p>第二段正文</p><p>第三段正文</p>'
+const paragraphs = '<title>关于做好统计发布工作的通知</title><p>第一段正文</p><p>第二段正文</p><p>第三段正文</p>'
 function fixture(pages: Record<string, string | Error>, action: 'added' | 'duplicate' | 'failed' = 'added') {
   const fetched: string[] = []
   const collected: CollectOneInput[] = []
@@ -18,7 +18,7 @@ function fixture(pages: Record<string, string | Error>, action: 'added' | 'dupli
   let active = 0
   const runtime: OfficialCollectRuntime = {
     fetch: async (url, opts): Promise<RawResponse> => {
-      assert.equal(opts.respectRobots, true)
+      assert.equal(opts.respectRobots, false, 'user-authorized default skips robots')
       assert.deepEqual(opts.hosts, deps.hosts)
       assert.equal(active++, 0, 'fetches must remain serial')
       try {

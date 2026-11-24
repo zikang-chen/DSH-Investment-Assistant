@@ -3,6 +3,7 @@ import { Button } from './design-system/index.js'
 import { KlineChart, type KlineMarker } from './kline-chart.js'
 import { IntradayView, type IntradayRead } from './intraday-view.js'
 import { chartInstrument } from './chart-instrument.js'
+import { GoldProxyChart } from './gold-proxy-chart.js'
 import type { RawBar } from './kline-math.js'
 export type ChartMode = 'daily' | 'intraday1' | 'intraday5'
 
@@ -48,6 +49,7 @@ export function MarketChart(props: {
     </div>
     {mode === 'daily' ? <>
       {error ? <div role="alert" className="fia-notice fia-notice--error">{error} <Button onClick={() => { setRetry(n => n + 1); props.onRetry?.() }}>重试</Button></div> : null}
+      {error && target.secid === '101.GC00Y' && !bars.length ? <GoldProxyChart key={identity} get={props.get} height={props.height} /> : null}
       {bars.length ? <>
         <KlineChart key={identity} bars={bars} markers={exchangeFund ? [] : props.markers} height={props.height} title={`${props.name || target.code} ${fundNav ? '净值' : 'K线'}`} />
         <div className="fia-muted" style={{ fontSize: 11, marginTop: 4 }}>最新{fundNav ? '净值日' : '交易日'} {bars.at(-1)!.date.slice(0, 10)}{props.updatedAt ? ` · 更新 ${displayChartTime(props.updatedAt)}` : ''}</div>

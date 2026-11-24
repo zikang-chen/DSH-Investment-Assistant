@@ -33,7 +33,7 @@ export function decodeEntities(input: string): string {
 export function htmlToText(html: string): string {
   let s = String(html ?? '')
   s = s.replace(/<!--[\s\S]*?-->/g, '')
-  s = s.replace(/<(script|style|noscript|template|svg|iframe)[\s\S]*?<\/\1>/gi, '')
+  s = s.replace(/<(script|style|noscript|template|svg|iframe|footer|nav)\b[\s\S]*?<\/\1>/gi, '')
   s = s.replace(/<br\s*\/?>/gi, '\n')
   s = s.replace(/<\/(p|div|section|article|li|tr|h[1-6]|blockquote|table|header|footer|dd|dt)>/gi, '\n\n')
   s = s.replace(/<\/t[dh]>/gi, '\t')
@@ -148,8 +148,8 @@ export function pageTitleOf(html: string): string | undefined {
 export function isNavigationTitle(title: string): boolean {
   const text = String(title ?? '').trim()
   if (!text) return true
-  if (text.length <= 4) return true
   return /^(首页|网站地图|联系我们|关于我们|English|登录|注册|无障碍浏览|打印本页|关闭窗口|返回顶部|分享到|更多|下一页|上一页)$/i.test(text)
+    || /^(?:政策文件|政策法规|政策文件库|最新政策|通知公告|信息公开|政府信息公开|政策发布|政策解读|新闻发布|新闻中心|数据发布)(?:栏目|列表)?$/.test(text)
     || /(部门网站|政府网站|友情链接|网站声明|版权声明|使用帮助|主办单位|承办单位|技术支持)/.test(text)
 }
 

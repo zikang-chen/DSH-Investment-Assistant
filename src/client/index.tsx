@@ -1177,8 +1177,8 @@ function GlobalIndicesPanel() {
   const [openIndex, setOpenIndex] = useState('')
   const [indexBars, setIndexBars] = useState<{ secid: string; bars: HistBar[]; error?: string; source?: string } | undefined>()
   const indexSeq = useRef(0)
-  const toggleIndex = async (row: GlobalIndexRow) => {
-    if (openIndex === row.secid) { setOpenIndex(''); setIndexBars(undefined); return }
+  const toggleIndex = async (row: GlobalIndexRow, retry = false) => {
+    if (!retry && openIndex === row.secid) { indexSeq.current++; setOpenIndex(''); setIndexBars(undefined); return }
     setOpenIndex(row.secid); setIndexBars(undefined)
     const seq = ++indexSeq.current
     try {
@@ -1239,7 +1239,7 @@ function GlobalIndicesPanel() {
           ? h(MarketChart, { code: openRow.secid, kind: 'global', secid: openRow.secid, name: openRow.name,
             bars: indexBars.bars, get: apiGet, height: 280,
             ...(indexBars.error ? { error: indexBars.error } : {}),
-            onRetry: () => void toggleIndex(openRow) })
+            onRetry: () => void toggleIndex(openRow, true) })
           : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 140 }))) : null,
       h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：东方财富全球指数，不可用时日K回落腾讯。点击指数可展开日K或分时。')))
 }

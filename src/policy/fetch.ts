@@ -42,6 +42,8 @@ export interface FetchOptions {
   /** Skip the robots check for a host we already cleared in this run. */
   robotsCache?: Map<string, string>
   headers?: Record<string, string>
+  /** Extra caller boundary; checked before every request, including redirects. */
+  validateUrl?: (url: string) => boolean
 }
 
 export class PolicyFetchError extends Error {
@@ -67,6 +69,7 @@ export function hostAllowed(url: string, hosts: string[]): boolean {
     return false
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+  if (parsed.username || parsed.password) return false
   const host = parsed.hostname.toLowerCase()
   return hosts.some((raw) => {
     const entry = raw.trim().toLowerCase()
@@ -144,11 +147,15 @@ async function loadRobots(origin: string, opts: FetchOptions): Promise<RobotsRul
     return cached === '' ? undefined : parseRobots(cached)
   }
   try {
-    const res = await rawFetch(`${origin}/robots.txt`, { ...opts, respectRobots: false, maxBytes: 256 * 1024 })
+    const res = await rawFetch(`${origin}/robots.txt`, {
+      ...opts, respectRobots: false, maxBytes: Math.min(opts.maxBytes, 256 * 1024),
+      validateUrl: (url) => new URL(url).origin === origin,
+    })
     const text = res.buffer.toString('utf8')
     cache?.set(origin, text)
     return parseRobots(text)
-  } catch {
+  } catch (error) {
+    if (opts.signal?.aborted) throw error
     // No robots.txt (404/timeout) is treated as "no rules published".
     cache?.set(origin, '')
     return undefined
@@ -156,7 +163,7 @@ async function loadRobots(origin: string, opts: FetchOptions): Promise<RobotsRul
 }
 
 async function rawFetch(url: string, opts: FetchOptions): Promise<RawResponse> {
-  if (!hostAllowed(url, opts.hosts)) throw new PolicyFetchError(`不在允许清单内的主机：${url}`, 'not-allowlisted')
+  if (!hostAllowed(url, opts.hosts) || opts.validateUrl?.(url) === false) throw new PolicyFetchError(`链接不在允许清单/抓取范围内：${url}`, 'not-allowlisted')
   if (opts.signal?.aborted) throw new PolicyFetchError('已取消', 'aborted')
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(new Error('timeout')), opts.timeoutMs)
@@ -168,7 +175,7 @@ async function rawFetch(url: string, opts: FetchOptions): Promise<RawResponse> {
     for (let hop = 0; ; hop++) {
       // Validate BEFORE sending each request; redirect:'follow' would contact an
       // off-allowlist host before the old final-URL check could reject it.
-      if (!hostAllowed(target, opts.hosts)) throw new PolicyFetchError(`重定向到允许清单外的主机：${target}`, 'not-allowlisted')
+      if (!hostAllowed(target, opts.hosts) || opts.validateUrl?.(target) === false) throw new PolicyFetchError(`重定向到允许清单/抓取范围外：${target}`, 'not-allowlisted')
       res = await fetch(target, {
         redirect: 'manual', signal: ctrl.signal,
         headers: {
@@ -182,14 +189,14 @@ async function rawFetch(url: string, opts: FetchOptions): Promise<RawResponse> {
       await res.body?.cancel().catch(() => {})
       if (!location || hop >= 5) throw new PolicyFetchError('重定向过多或缺少 Location', 'http-error')
       target = new URL(location, target).toString()
-      if (!hostAllowed(target, opts.hosts)) throw new PolicyFetchError(`重定向到允许清单外的主机：${target}`, 'not-allowlisted')
+      if (!hostAllowed(target, opts.hosts) || opts.validateUrl?.(target) === false) throw new PolicyFetchError(`重定向到允许清单/抓取范围外：${target}`, 'not-allowlisted')
       if (opts.respectRobots !== false) {
         const next = new URL(target)
         const rules = await loadRobots(next.origin, opts)
         if (rules && !robotsAllows(rules, `${next.pathname}${next.search}`)) throw new PolicyFetchError('robots.txt 不允许重定向目标', 'robots-disallowed')
       }
     }
-    if (!hostAllowed(res.url, opts.hosts)) {
+    if (!hostAllowed(res.url, opts.hosts) || opts.validateUrl?.(res.url) === false) {
       throw new PolicyFetchError(`重定向到允许清单外的主机：${res.url}`, 'not-allowlisted')
     }
     if (!res.ok) throw new PolicyFetchError(`HTTP ${res.status} ${res.statusText}`, 'http-error')
@@ -222,7 +229,7 @@ async function rawFetch(url: string, opts: FetchOptions): Promise<RawResponse> {
   } catch (err) {
     if (err instanceof PolicyFetchError) throw err
     const e = err as Error
-    if (e.name === 'AbortError') {
+    if (ctrl.signal.aborted || e.name === 'AbortError') {
       throw new PolicyFetchError(opts.signal?.aborted ? '已取消' : `请求超时（${opts.timeoutMs}ms）`, opts.signal?.aborted ? 'aborted' : 'timeout')
     }
     throw new PolicyFetchError(e.message, 'http-error')
@@ -234,12 +241,28 @@ async function rawFetch(url: string, opts: FetchOptions): Promise<RawResponse> {
 
 /** Fetch one document, honouring robots.txt unless the caller opts out. */
 export async function fetchPolicyDocument(url: string, opts: FetchOptions): Promise<RawResponse> {
-  const parsed = new URL(url)
-  if (opts.respectRobots !== false) {
-    const rules = await loadRobots(parsed.origin, opts)
-    if (rules && !robotsAllows(rules, `${parsed.pathname}${parsed.search}`)) {
-      throw new PolicyFetchError(`robots.txt 不允许抓取：${parsed.pathname}`, 'robots-disallowed')
+  if (!hostAllowed(url, opts.hosts) || opts.validateUrl?.(url) === false) throw new PolicyFetchError(`链接不在允许清单/抓取范围内：${url}`, 'not-allowlisted')
+  if (opts.signal?.aborted) throw new PolicyFetchError('已取消', 'aborted')
+  // One timeout covers robots, redirects and body streaming together.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error('请求超时')), opts.timeoutMs)
+  const onAbort = (): void => controller.abort(opts.signal?.reason)
+  opts.signal?.addEventListener('abort', onAbort, { once: true })
+  const bounded = { ...opts, signal: controller.signal }
+  try {
+    const parsed = new URL(url)
+    if (opts.respectRobots !== false) {
+      const rules = await loadRobots(parsed.origin, bounded)
+      if (rules && !robotsAllows(rules, `${parsed.pathname}${parsed.search}`)) {
+        throw new PolicyFetchError(`robots.txt 不允许抓取：${parsed.pathname}`, 'robots-disallowed')
+      }
     }
+    return await rawFetch(url, bounded)
+  } catch (error) {
+    if (controller.signal.aborted) throw new PolicyFetchError(opts.signal?.aborted ? '已取消' : `请求超时（${opts.timeoutMs}ms）`, opts.signal?.aborted ? 'aborted' : 'timeout')
+    throw error
+  } finally {
+    clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', onAbort)
   }
-  return rawFetch(url, opts)
 }

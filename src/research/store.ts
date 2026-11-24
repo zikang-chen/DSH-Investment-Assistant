@@ -325,6 +325,11 @@ function docList(meta: DocMeta, key: string): string[] {
 
 interface VaultTransaction { data: VaultFile; docs: Map<string, { before: string | null; after: string | null }> }
 
+/** Only index conflicts are retried; document/approval conflicts still require a fresh preview. */
+class ResearchIndexConflict extends ResearchValidationError {
+  constructor() { super('资料索引持续被其他进程修改，本次未保存，请稍后重试') }
+}
+
 export class ResearchVault {
   private data: VaultFile = { version: 1, updatedAt: new Date(0).toISOString(), items: [] }
   private loaded = false
@@ -365,14 +370,10 @@ export class ResearchVault {
 
   private async loadOnce(): Promise<void> {
     try {
-      this.indexRaw = await readFile(this.indexPath, 'utf8')
-      const parsed = JSON.parse(this.indexRaw) as Partial<VaultFile>
-      if (!Array.isArray(parsed.items)) throw new Error('资料库索引结构无效')
-      this.data = {
-        version: 1,
-        updatedAt: parsed.updatedAt ?? new Date().toISOString(),
-        items: (parsed.items ?? []).map((i) => this.normalize(i)),
-      }
+      const raw = await readFile(this.indexPath, 'utf8')
+      const data = this.parseIndex(raw)
+      this.data = data
+      this.indexRaw = raw
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
       this.data = { version: 1, updatedAt: new Date().toISOString(), items: [] }
@@ -417,36 +418,91 @@ export class ResearchVault {
     await this.atomic(this.indexPath, raw)
     this.indexRaw = raw
   }
+  /** Validate the entire external snapshot before replacing any in-memory state. */
+  private parseIndex(raw: string): VaultFile {
+    let parsed: Partial<VaultFile> | null
+    try { parsed = JSON.parse(raw) as Partial<VaultFile> | null }
+    catch { throw new ResearchValidationError('资料索引不是合法 JSON，请修复后重新同步') }
+    if (!parsed || !Array.isArray(parsed.items)) throw new ResearchValidationError('资料库索引结构无效（缺少 items 数组）')
+    const ids = new Set<string>(), files = new Set<string>()
+    const items = parsed.items.map(item => {
+      if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id.trim() || typeof item.file !== 'string' || !item.file.trim()) {
+        throw new ResearchValidationError('资料库索引结构无效（条目缺少 id 或 file）')
+      }
+      for (const key of ['title', 'source', 'occurredAt', 'createdAt', 'updatedAt'] as const) {
+        if (typeof item[key] !== 'string' || !item[key].trim()) throw new ResearchValidationError(`资料库索引结构无效（条目缺少 ${key}）`)
+      }
+      if (item.notes !== undefined && (!Array.isArray(item.notes) || item.notes.some(note => !note || typeof note.at !== 'string' || typeof note.text !== 'string'))) {
+        throw new ResearchValidationError('资料库索引结构无效（批注格式无效）')
+      }
+      const absolute = this.docPath(item.file)
+      const fileKey = process.platform === 'win32' ? absolute.toLowerCase() : absolute
+      if (ids.has(item.id) || files.has(fileKey)) throw new ResearchValidationError('资料库索引结构无效（id 或文件路径重复）')
+      ids.add(item.id); files.add(fileKey)
+      return this.normalize(item)
+    })
+    return { version: 1, updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(), items }
+  }
+
+  /**
+   * index.json 可被外部编辑，事务开始时先采纳有效快照。损坏的索引不覆盖、不清空。
+   * 同一实例的写入由 queue 串行；提交时仍复查，防止事务执行期间的外部写入。
+   */
+  private async adoptExternalIndex(): Promise<void> {
+    const disk = await this.readRaw(this.indexPath)
+    if (disk === this.indexRaw) return
+    if (disk === null) {
+      // 索引被删除时，下一次提交重建它；已有资料及批注不丢失。
+      this.indexRaw = null
+      return
+    }
+    const data = this.parseIndex(disk)
+    this.data = data
+    this.indexRaw = disk
+    this.logger?.warn('vault index changed on disk, adopted', { path: this.indexPath, items: data.items.length })
+    this.emit()
+  }
+
   private transaction<T>(fn: (tx: VaultTransaction) => Promise<T>): Promise<T> {
     const task = this.queue.then(async () => {
       await this.load()
       if (this.recoveryRequired) throw new ResearchValidationError('资料写入回滚失败；请备份并重新加载插件、同步文件后再操作')
-      const tx: VaultTransaction = { data: structuredClone(this.data), docs: new Map() }
-      const result = await fn(tx)
-      if (!tx.docs.size && JSON.stringify(tx.data) === JSON.stringify(this.data)) return structuredClone(result)
-      const applied: Array<[string, { before: string | null; after: string | null }]> = []
-      try {
-        for (const [file, op] of tx.docs) {
-          if (await this.readRaw(file) !== op.before) throw new ResearchValidationError('资料文件已变化，请重新同步后预览')
-          await this.atomic(file, op.after); applied.push([file, op])
+      // Bounded retry for an index changed mid-transaction. Never retry an approval
+      // or a conflicting Markdown edit; those still need a new sync/preview.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await this.adoptExternalIndex()
+        const beforeIndex = this.indexRaw
+        const tx: VaultTransaction = { data: structuredClone(this.data), docs: new Map() }
+        const result = await fn(tx)
+        const changed = tx.docs.size > 0 || JSON.stringify(tx.data) !== JSON.stringify(this.data)
+        const applied: Array<[string, { before: string | null; after: string | null }]> = []
+        try {
+          if (await this.readRaw(this.indexPath) !== beforeIndex) throw new ResearchIndexConflict()
+          if (!changed && beforeIndex !== null) return structuredClone(result)
+          for (const [file, op] of tx.docs) {
+            if (await this.readRaw(file) !== op.before) throw new ResearchValidationError('资料文件已变化，请重新同步后预览')
+            await this.atomic(file, op.after); applied.push([file, op])
+          }
+          tx.data.updatedAt = new Date().toISOString()
+          if (await this.readRaw(this.indexPath) !== beforeIndex) throw new ResearchIndexConflict()
+          const raw = `${JSON.stringify(tx.data, null, 2)}\n`
+          await this.atomic(this.indexPath, raw)
+          this.indexRaw = raw
+        } catch (error) {
+          // Best-effort rollback, never overwrite an intervening Markdown edit.
+          // The file checks are not an OS-wide multi-file CAS or crash journal.
+          for (const [file, op] of applied.reverse()) {
+            try { if (await this.readRaw(file) === op.after) await this.atomic(file, op.before); else this.recoveryRequired = true }
+            catch (e) { this.recoveryRequired = true; this.logger?.error('vault rollback failed; resync required', { file, error: String(e) }) }
+          }
+          if (error instanceof ResearchIndexConflict && !this.recoveryRequired && attempt < 2) continue
+          throw error
         }
-        tx.data.updatedAt = new Date().toISOString()
-        if (await this.readRaw(this.indexPath) !== this.indexRaw) throw new ResearchValidationError('资料索引被外部修改，请重新加载插件')
-        const raw = `${JSON.stringify(tx.data, null, 2)}\n`
-        await this.atomic(this.indexPath, raw)
-        this.indexRaw = raw
-      } catch (error) {
-        // Best-effort rollback for ordinary I/O failures, never overwrite an
-        // intervening external edit. This is not multi-file crash atomicity.
-        for (const [file, op] of applied.reverse()) {
-          try { if (await this.readRaw(file) === op.after) await this.atomic(file, op.before); else this.recoveryRequired = true }
-          catch (e) { this.recoveryRequired = true; this.logger?.error('vault rollback failed; resync required', { file, error: String(e) }) }
-        }
-        throw error
+        this.data = tx.data
+        this.emit()
+        return structuredClone(result)
       }
-      this.data = tx.data
-      this.emit()
-      return structuredClone(result)
+      throw new ResearchIndexConflict()
     })
     this.queue = task.catch(() => {})
     return task
@@ -688,9 +744,10 @@ export class ResearchVault {
     }
     try {
       const w = watch(this.root, { recursive: true }, (_event, filename) => {
-        // 只认正文：index.json / index.json.tmp 是我们自己写的，忽略以避免自触发回环。
+        // 索引也可能由编辑器/其它进程更新。自身写索引会再同步一次，
+        // 无变化时事务不写盘，因此不会形成自触发回环；临时文件仍忽略。
         const name = filename ? String(filename) : ''
-        if (name && !name.endsWith('.md')) return
+        if (name && !name.endsWith('.md') && path.basename(name) !== 'index.json') return
         schedule()
       })
       w.on('error', (err) => {

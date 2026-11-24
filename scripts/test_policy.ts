@@ -277,7 +277,7 @@ let whitePaperId = ''
 await test('手工导入白皮书正文并可按章节检索', async () => {
   const res = await importText(deps, {
     title: '数字经济发展白皮书（2026）',
-    text: '第一章 发展现状。我国数字经济规模连续多年位居世界第二，占GDP比重持续提升。\n\n第二章 重点任务。加快数据要素市场建设，推动公共数据授权运营，完善数据产权制度。',
+    text: '第一章 发展现状。我国数字经济规模连续多年位居世界第二，占GDP比重持续提升。\n\n第二章 重点任务。加快数据要素市场建设，推动公共数据授权运营，完善数据产权制度。\n\n' + PLAN_BODY.join('\n\n'),
     sourceUrl: `${base}/whitepaper`,
     issuer: '国务院新闻办公室',
     docType: 'white-paper',
@@ -290,7 +290,7 @@ await test('手工导入白皮书正文并可按章节检索', async () => {
 })
 await test('本地文件导入：Markdown 正文入库', async () => {
   const file = path.join(fixtureDir, 'note.md')
-  await writeFile(file, '# 规划摘录\n\n支持新能源汽车下乡，完善充换电基础设施。\n\n到2030年，新能源汽车渗透率达到60%。', 'utf8')
+  await writeFile(file, '# 规划摘录\n\n支持新能源汽车下乡，完善充换电基础设施。\n\n到2030年，新能源汽车渗透率达到60%。\n\n' + PLAN_BODY.join('\n\n'), 'utf8')
   const res = await importFile(deps, file, { title: '规划摘录', issuer: '国家发展改革委', docType: 'industry-plan' })
   assert.equal(res.ok, true, res.error)
   assert.ok(res.doc!.paragraphs.length >= 1)

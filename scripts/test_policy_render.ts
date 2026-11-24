@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { findChrome, looksScriptRendered } from '../src/policy/browser-render.js'
+import { findChrome, isAccessControlPage, looksScriptRendered, renderCdpPage, type CdpSession } from '../src/policy/browser-render.js'
 import { collectOfficialPages } from '../src/policy/official-collect.js'
 
 let checks = 0
@@ -90,4 +90,95 @@ check('接线：工具暴露 render_js，默认关闭', () => {
   assert.match(official, /options\.renderJs/, '必须显式开启')
 })
 
-console.log(`\n[policy-render] ${checks} 组通过（离线；真实浏览器只做过一次手工探测）`)
+function cdpFixture(payload: { html?: string; url?: string; error?: string }, event?: (emit: (method: string, params: Record<string, any>) => void) => void) {
+  const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+  let emit = (_method: string, _params: Record<string, any>) => {}
+  const session: CdpSession = {
+    send: async (method, params) => {
+      calls.push({ method, params })
+      if (method === 'Page.navigate') event?.(emit)
+      return method === 'Runtime.evaluate' ? { result: { value: JSON.stringify(payload) } } : {}
+    },
+    onEvent: (listener) => { emit = listener; return () => { emit = () => {} } }, close: () => {},
+  }
+  return { calls, session }
+}
+const cdpOptions = { hosts: ['example.gov.cn'], maxBytes: 2000, settleMs: 0, scrollToBottom: false }
+const allowedUrl = 'https://example.gov.cn/zhengce/list.html'
+
+await check('CDP先启用请求拦截，跨域资源在发送前被阻断；身份不伪装浏览器', async () => {
+  const fixture = cdpFixture({ html: '<html>政策列表</html>', url: allowedUrl }, (emit) => {
+    emit('Fetch.requestPaused', { requestId: 'outside', resourceType: 'Script', request: { url: 'https://evil.example/a.js' } })
+    emit('Fetch.requestPaused', { requestId: 'script', resourceType: 'Script', request: { url: 'https://example.gov.cn/static/app.js' } })
+    emit('Fetch.requestPaused', { requestId: 'api', resourceType: 'XHR', request: { url: 'https://example.gov.cn/api/list' } })
+  })
+  const res = await renderCdpPage(fixture.session, allowedUrl, { ...cdpOptions, isUrlAllowed: (target) => target.startsWith('https://example.gov.cn/zhengce/') }, new AbortController().signal)
+  assert.equal(res.ok, true)
+  assert.ok(fixture.calls.findIndex((c) => c.method === 'Fetch.enable') < fixture.calls.findIndex((c) => c.method === 'Page.navigate'))
+  assert.ok(fixture.calls.some((c) => c.method === 'Fetch.failRequest' && c.params?.requestId === 'outside'))
+  assert.ok(fixture.calls.some((c) => c.method === 'Fetch.continueRequest' && c.params?.requestId === 'script'))
+  assert.ok(fixture.calls.some((c) => c.method === 'Fetch.continueRequest' && c.params?.requestId === 'api'))
+  assert.match(String(fixture.calls.find((c) => c.method === 'Network.setUserAgentOverride')?.params?.userAgent), /dsh-investment-assistant-policy/)
+})
+
+await check('CDP与注入渲染器都拒绝越界最终URL、超大DOM及访问控制页面', async () => {
+  for (const payload of [
+    { html: '<html>资料</html>', url: 'https://other.gov.cn/zhengce/list.html' },
+    { html: '字'.repeat(2000), url: allowedUrl },
+    { html: '<title>Access Denied</title>', url: allowedUrl },
+  ]) {
+    const fixture = cdpFixture(payload)
+    const res = await renderCdpPage(fixture.session, allowedUrl, cdpOptions, new AbortController().signal)
+    assert.equal(res.ok, false)
+  }
+  assert.equal(isAccessControlPage('<input type="password">'), true)
+  for (const rendered of [{ ok: true, html: '<div>x</div>', url: 'https://other.gov.cn/list' }, { ok: true, html: '字'.repeat(2000), url: allowedUrl }]) {
+    const res = await collectOfficialPages({ hosts: ['example.gov.cn', 'other.gov.cn'], timeoutMs: 100, maxBytes: 1000, store: {} } as never,
+      { url: allowedUrl, dryRun: true, renderJs: true }, {
+        gapMs: 0, fetch: (async (url: string) => ({ url, contentType: 'text/html', buffer: Buffer.from('<div id="app"></div>') })) as never,
+        render: async () => rendered,
+      })
+    assert.equal(res.ok, false)
+    assert.equal(res.renderedPages ?? 0, 0)
+  }
+})
+
+await check('CDP导航越界/HTTP403/网络体积/身份验证一律失败，不尝试绕过', async () => {
+  for (const [method, params] of [
+    ['Fetch.requestPaused', { requestId: 'nav', resourceType: 'Document', request: { url: 'https://evil.example/private' } }],
+    ['Network.responseReceived', { type: 'Document', response: { url: allowedUrl, status: 403 } }],
+    ['Network.dataReceived', { dataLength: 9000 }],
+    ['Fetch.authRequired', { requestId: 'auth' }],
+  ] as Array<[string, Record<string, any>]>) {
+    const fixture = cdpFixture({ html: '<html>内容</html>', url: allowedUrl }, (emit) => emit(method, params))
+    const res = await renderCdpPage(fixture.session, allowedUrl, cdpOptions, new AbortController().signal)
+    assert.equal(res.ok, false, method)
+  }
+})
+
+await check('静态访问控制页面不开浏览器；渲染页预算为硬上限', async () => {
+  let renders = 0
+  const d = { hosts: ['example.gov.cn'], timeoutMs: 100, maxBytes: 2000, store: {} } as never
+  const denied = await collectOfficialPages(d, { url: allowedUrl, renderJs: true }, {
+    gapMs: 0, fetch: (async (url: string) => ({ url, contentType: 'text/html', buffer: Buffer.from('<title>登录验证</title>') })) as never,
+    render: async () => { renders++; return { ok: true, html: '不应渲染' } },
+  })
+  assert.equal(denied.ok, false); assert.equal(renders, 0)
+  const bounded = await collectOfficialPages(d, { url: allowedUrl, renderJs: true, renderMaxPages: 1, maxPages: 2, dryRun: true }, {
+    gapMs: 0, fetch: (async (url: string) => ({ url, contentType: 'text/html', buffer: Buffer.from('<a href="/zhengce/next.html">下一页</a>') })) as never,
+    render: async () => { renders++; return { ok: true, html: '<a href="/zhengce/next.html">下一页</a>' } },
+  })
+  assert.equal(renders, 1); assert.equal(bounded.skipped?.overRenderBudget, 1)
+})
+
+await check('CDP同源依赖仍受80次资源请求硬预算', async () => {
+  const fixture = cdpFixture({ html: '<html>内容</html>', url: allowedUrl }, (emit) => {
+    for (let i = 0; i < 81; i++) emit('Fetch.requestPaused', { requestId: String(i), resourceType: 'Script', request: { url: `https://example.gov.cn/static/${i}.js` } })
+  })
+  const res = await renderCdpPage(fixture.session, allowedUrl, cdpOptions, new AbortController().signal)
+  assert.equal(res.ok, false)
+  assert.match(res.error ?? '', /80/)
+  assert.ok(fixture.calls.some((c) => c.method === 'Fetch.failRequest' && c.params?.requestId === '80'))
+})
+
+console.log(`\n[policy-render] ${checks} 组通过（离线协议测试；本轮未启动真实Chrome）`)

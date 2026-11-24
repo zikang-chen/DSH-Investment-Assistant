@@ -12,7 +12,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { collectOne, type CollectDeps } from './collect.js'
-import { looksScriptRendered, renderWithChrome } from './browser-render.js'
+import { isAccessControlPage, looksScriptRendered, renderWithChrome, type RenderOptions, type RenderResult } from './browser-render.js'
 import { discoverLinks, isNavigationTitle, pageTitleOf } from './extract.js'
 import { fetchPolicyDocument, hostAllowed, sha256Hex, type FetchOptions } from './fetch.js'
 import type { PolicyDocType } from './types.js'
@@ -212,9 +212,9 @@ export function inWindow(date: string | undefined, from?: string, to?: string): 
 export interface OfficialCollectRuntime {
   fetch?: typeof fetchPolicyDocument
   collectOne?: typeof collectOne
-  countExcelRows?: (buffer: Buffer, kind: AttachmentKind) => Promise<number | undefined>
+  countExcelRows?: (buffer: Buffer, kind: AttachmentKind, signal?: AbortSignal) => Promise<number | undefined>
   /** 注入渲染器，便于测试；默认用 CDP + 本机 Chrome。 */
-  render?: (url: string) => Promise<{ ok: boolean; html?: string; error?: string }>
+  render?: (url: string, options: RenderOptions) => Promise<RenderResult>
   /** Delay between sequential fetch/collect operations (default 1000ms). */
   gapMs?: number
   sleep?: (ms: number) => Promise<void>
@@ -226,239 +226,246 @@ function safeRegExp(source: string): RegExp | undefined {
 }
 
 export async function collectOfficialPages(deps: CollectDeps, options: OfficialCollectOptions, runtime: OfficialCollectRuntime = {}): Promise<OfficialCollectResult> {
-  const maxPages = Math.max(1, Math.min(30, options.maxPages ?? 1))
-  const maxDocs = Math.max(1, Math.min(50, options.maxDocs ?? 20))
-  const maxAttachments = Math.max(0, Math.min(30, options.maxAttachments ?? 20))
-  const maxLinks = Math.max(1, Math.min(200, options.maxLinks ?? 60))
-  const renderMaxPages = Math.max(0, Math.min(10, options.renderMaxPages ?? 3))
-  const deadlineMs = Math.max(5_000, Math.min(300_000, options.deadlineMs ?? 90_000))
-  const startedAt = Date.now()
+  const cap = (value: number | undefined, fallback: number, min: number, max: number): number =>
+    Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value!))) : fallback
+  const maxPages = cap(options.maxPages, 1, 1, 30)
+  const maxDocs = cap(options.maxDocs, 20, 1, 50)
+  const maxAttachments = cap(options.maxAttachments, 20, 0, 30)
+  const maxLinks = cap(options.maxLinks, 60, 1, 200)
+  const renderMaxPages = cap(options.renderMaxPages, 3, 0, 10)
+  const deadlineMs = cap(options.deadlineMs, 90_000, 1, 300_000)
+  const result: OfficialCollectResult = { ok: true, url: options.url, pagesVisited: 0, documents: [], attachments: [], tables: 0, errors: [] }
   const skipped = { linksOutOfScope: 0, overLinkBudget: 0, overRenderBudget: 0, exceededDeadline: false }
+  result.skipped = skipped
   const pattern = options.urlPattern ? safeRegExp(options.urlPattern) : undefined
-  if (options.urlPattern && !pattern) {
-    return { ok: false, url: options.url, pagesVisited: 0, documents: [], attachments: [], tables: 0, errors: ['urlPattern 不是合法正则'] }
-  }
-  const defaultPrefix = (() => {
-    try {
-      const start = new URL(options.url)
-      const dir = start.pathname.replace(/[^/]*$/, '')
-      return dir.length > 1 ? dir : '/'
-    } catch { return '/' }
-  })()
+  if (options.urlPattern && !pattern) return { ...result, ok: false, errors: ['urlPattern 不是合法正则'] }
+  if (!hostAllowed(options.url, deps.hosts)) return { ...result, ok: false, errors: [`链接无效或不在允许清单内：${options.url}`] }
+  const start = new URL(options.url)
+  start.hash = ''
+  const defaultPrefix = start.pathname.replace(/[^/]*$/, '') || '/'
   const pathPrefix = options.pathPrefix ?? defaultPrefix
-  /** 只有「同主机 + 允许清单 + 前缀 + 正则」都满足才跟随。 */
+  if (!pathPrefix.startsWith('/') || pathPrefix.includes('?') || pathPrefix.includes('#')) return { ...result, ok: false, errors: ['pathPrefix 必须是绝对 URL 路径前缀'] }
   const inScope = (target: string): boolean => {
     if (!hostAllowed(target, deps.hosts)) return false
-    try {
-      const url = new URL(target)
-      if (!url.pathname.startsWith(pathPrefix)) return false
-      if (pattern && !pattern.test(target)) return false
-      return true
-    } catch { return false }
+    const url = new URL(target)
+    // An allowlist is not permission to crawl every other official host.
+    return url.origin === start.origin && url.pathname.startsWith(pathPrefix) && (!pattern || pattern.test(url.toString()))
   }
-  const deadlineHit = (): boolean => {
-    if (Date.now() - startedAt < deadlineMs) return false
+  const canFetch = (target: string): boolean => target === start.toString() || inScope(target)
+  const controller = new AbortController()
+  const onAbort = (): void => controller.abort(deps.signal?.reason ?? new Error('已取消'))
+  if (deps.signal?.aborted) onAbort()
+  else deps.signal?.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => {
     skipped.exceededDeadline = true
-    return true
+    controller.abort(new Error('整轮采集超过 deadline'))
+  }, deadlineMs)
+  const signal = controller.signal
+  const active = (): void => signal.throwIfAborted()
+  // Bound injected operations too; real network/browser/subprocess paths also receive signal.
+  const bounded = async <T>(operation: () => Promise<T>): Promise<T> => {
+    active()
+    return new Promise<T>((resolve, reject) => {
+      const abort = (): void => { cleanup(); reject(signal.reason ?? new Error('已取消')) }
+      const cleanup = (): void => signal.removeEventListener('abort', abort)
+      signal.addEventListener('abort', abort, { once: true })
+      Promise.resolve().then(() => { active(); return operation() }).then((value) => {
+        cleanup()
+        try { active(); resolve(value) } catch (error) { reject(error) }
+      }, (error) => { cleanup(); reject(error) })
+    })
   }
-  let renderedCount = 0
-  let followedLinks = 0
-  const result: OfficialCollectResult = { ok: true, url: options.url, pagesVisited: 0, documents: [], attachments: [], tables: 0, errors: [] }
-  if (!hostAllowed(options.url, deps.hosts)) {
-    return { ...result, ok: false, errors: [`链接无效或不在允许清单内：${options.url}`] }
-  }
-  const fetchOpts: FetchOptions = {
-    hosts: deps.hosts, timeoutMs: deps.timeoutMs, maxBytes: deps.maxBytes,
-    respectRobots: options.respectRobots === true, robotsCache: deps.robotsCache, signal: deps.signal,
-  }
+  const runDeps: CollectDeps = { ...deps, signal, validateUrl: canFetch, respectRobots: options.respectRobots === true }
+  const fetchOpts: FetchOptions = { ...runDeps, hosts: deps.hosts, timeoutMs: deps.timeoutMs, maxBytes: deps.maxBytes }
   const fetchDocument = runtime.fetch ?? fetchPolicyDocument
   const importDocument = runtime.collectOne ?? collectOne
   const sleep = runtime.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const gapMs = Math.max(0, runtime.gapMs ?? 1000)
   let operations = 0
-  const pace = async (): Promise<void> => { if (operations++ > 0 && gapMs > 0) await sleep(gapMs) }
+  const pace = async (): Promise<void> => {
+    active()
+    if (operations++ > 0 && gapMs > 0) await bounded(() => sleep(gapMs))
+    active()
+  }
   const fetchPage = async (url: string) => {
-    if (!hostAllowed(url, deps.hosts)) throw new Error(`链接不在允许清单内：${url}`)
+    active()
+    if (!canFetch(url)) throw new Error(`链接不在抓取范围内：${url}`)
     await pace()
-    const res = await fetchDocument(url, fetchOpts)
-    if (!hostAllowed(res.url, deps.hosts)) throw new Error(`重定向不在允许清单内：${res.url}`)
+    const res = await bounded(() => fetchDocument(url, fetchOpts))
+    if (!canFetch(res.url)) throw new Error(`重定向不在抓取范围内：${res.url}`)
+    if (res.buffer.byteLength > deps.maxBytes) throw new Error(`响应超过上限 ${deps.maxBytes} 字节`)
     return res
   }
   const visited = new Set<string>()
   const seenDoc = new Set<string>()
-  const queue = [options.url]
-  const articles: OfficialAnchor[] = []
-  const attachments: OfficialAttachment[] = []
+  const followed = new Set<string>([start.toString()])
+  const outOfScope = new Set<string>()
+  const countOutOfScope = (url: string): void => {
+    if (!outOfScope.has(url)) { outOfScope.add(url); skipped.linksOutOfScope++ }
+  }
+  // Reserve once per discovered URL across pagination, articles AND attachments.
+  const reserve = (target: string): string | undefined => {
+    const url = new URL(target); url.hash = ''
+    const normalized = url.toString()
+    if (!inScope(normalized)) { countOutOfScope(normalized); return undefined }
+    if (followed.has(normalized)) return normalized
+    if (followed.size - 1 >= maxLinks) { skipped.overLinkBudget++; return undefined }
+    followed.add(normalized)
+    return normalized
+  }
+  const queue = [start.toString()]
+  const articles = new Map<string, OfficialAnchor>()
+  const attachments = new Map<string, OfficialAttachment>()
+  const directPlan: NonNullable<OfficialCollectResult['plan']> = []
+  const addAttachments = (html: string, base: string): void => {
+    if (!options.includeAttachments) return
+    for (const att of extractAttachmentLinks(html, base)) {
+      if (attachments.size >= maxAttachments) break
+      const url = reserve(att.url)
+      if (url) attachments.set(url, { ...att, url })
+    }
+  }
   const dates: string[] = []
   let attempts = 0
+  let renderedCount = 0
   const importOne = async (url: string, title?: string, date?: string): Promise<void> => {
+    active()
     await pace()
-    const one = await importDocument({ ...(deps as object), respectRobots: options.respectRobots === true } as typeof deps, {
+    const one = await bounded(() => importDocument(runDeps, {
       url, sourceId: options.sourceId ?? 'official-page', sourceClass: 'official',
-      issuer: options.issuer ?? '', docType: options.docType ?? 'other',
-      titleHint: title, publishedHint: date,
-    })
+      issuer: options.issuer ?? '', docType: options.docType ?? 'other', titleHint: title, publishedHint: date,
+    }))
     result.documents.push({ id: one.doc?.id, url, title: one.doc?.title ?? title, action: one.action, reason: one.reason ?? one.error })
     if (!one.ok) result.errors.push(`${url}: ${one.error ?? one.reason ?? '采集失败'}`)
-    if (date) dates.push(date)
+    else if (date) dates.push(date)
   }
-
-  while (queue.length && result.pagesVisited < maxPages && !deadlineHit()) {
-    const pageUrl = queue.shift()!
-    if (visited.has(pageUrl)) continue
-    visited.add(pageUrl)
-    result.pagesVisited += 1
-    try {
-      const res = await fetchPage(pageUrl)
-      if (!/html|xml|text\/plain/i.test(res.contentType) && !/\.html?$/i.test(new URL(pageUrl).pathname)) {
-        result.errors.push(`跳过非 HTML 页面（${res.contentType}）：${pageUrl}`)
-        continue
-      }
-      let html = decodeBody(res.buffer, res.contentType)
-      // 脚本渲染的列表页：静态 HTML 有条目就不开浏览器。
-      const staticLinks = extractArticleLinks(html, res.url).length
-      // 静态页没有条目时也渲染一次：比只看像不像空壳更可靠（交易所/部委常见）。
-      if (options.renderJs && (looksScriptRendered(html) || staticLinks === 0) && renderedCount < renderMaxPages) {
-        renderedCount += 1
-        const render = runtime.render ?? ((target: string) => renderWithChrome(target, { signal: deps.signal }))
-        try {
-          const rendered = await render(res.url)
-          if (rendered.ok && rendered.html) {
-            html = rendered.html
-            result.renderedPages = (result.renderedPages ?? 0) + 1
-            skipped.overRenderBudget += 0
-          } else {
-            result.errors.push(`${pageUrl}: 渲染失败（${rendered.error ?? '未知原因'}）`)
-          }
-        } catch (error) {
-          result.errors.push(`${pageUrl}: 渲染失败（${error instanceof Error ? error.message : String(error)}）`)
-        }
-      }
-      result.tables += extractTables(html).length
-      const strictArticles = extractArticleLinks(html, res.url)
-      // 严格规则为空时放宽：只接受同前缀、标题够长、非导航的链接。
-      // 前缀过窄会让链接全被过滤：为空时放宽到主机根路径重试一次，并记录。
-      let widenScope = false
-      const candidates = strictArticles.length === 0 && options.looseLinks !== false
-        ? discoverLinks(html, res.url)
-            .filter((link) => inScope(link.url) && link.url !== res.url && !isNavigationTitle(link.title) && link.title.length >= 8)
-            .map((link) => ({ url: link.url, label: link.title, ...(link.publishedAt ? { date: link.publishedAt } : {}) }))
-        : strictArticles
-      const widenedCandidates = candidates.length === 0 && options.looseLinks !== false
-        ? discoverLinks(html, res.url)
-            .filter((link) => hostAllowed(link.url, deps.hosts) && link.url !== res.url
-              && !isNavigationTitle(link.title) && link.title.length >= 8
-              && (!pattern || pattern.test(link.url)))
-            .map((link) => ({ url: link.url, label: link.title, ...(link.publishedAt ? { date: link.publishedAt } : {}) }))
-        : []
-      const widenedUrls = new Set<string>()
-      if (widenedCandidates.length && !candidates.length) {
-        widenScope = true
-        for (const item of widenedCandidates) { candidates.push(item); widenedUrls.add(item.url) }
-      }
-      void widenScope
-      for (const a of candidates) {
-        if (a.url === pageUrl) continue
-        // 放宽命中的链接已经过主机/标题/正则过滤，不再受路径前缀约束。
-        if (!widenedUrls.has(a.url) && !inScope(a.url)) { skipped.linksOutOfScope += 1; continue }
-        if (followedLinks >= maxLinks) { skipped.overLinkBudget += 1; continue }
-        followedLinks += 1
-        if (!inWindow(a.date, options.from, options.to)) continue
-        articles.push(a)
-      }
-      for (const att of extractAttachmentLinks(html, res.url)) attachments.push(att)
-      for (const next of extractNextPageUrls(html, res.url)) {
-        if (visited.has(next)) continue
-        if (!inScope(next)) { skipped.linksOutOfScope += 1; continue }
-        if (followedLinks >= maxLinks) { skipped.overLinkBudget += 1; continue }
-        followedLinks += 1
-        queue.push(next)
-      }
-      const date = publicationDate(html, res.url)
-      // 列表页本身不是一篇政策：同一页给出 ≥4 条文章链接时，只当索引，不入库。
-      // 统计范围外的链接（页脚/其它栏目），让 skipped 数字可信。
-      for (const link of discoverLinks(html, res.url)) {
-        if (link.url !== res.url && !inScope(link.url)) skipped.linksOutOfScope += 1
-      }
-      const pageArticles = extractArticleLinks(html, res.url).filter((a) => hostAllowed(a.url, deps.hosts))
-      const looksLikeIndex = pageArticles.length >= 4
-      const pageTitle = pageTitleOf(html)
-      // One shared attempt budget, including direct pages, duplicates and failures.
-      if (!looksLikeIndex && !isNavigationTitle(pageTitle ?? '') && (html.match(/<p\b/gi) ?? []).length >= 3 && attempts < maxDocs
-        && !seenDoc.has(res.url) && inWindow(date, options.from, options.to)) {
-        seenDoc.add(res.url)
-        attempts += 1
-        await importOne(res.url, undefined, date)
-      }
-    } catch (err) {
-      result.errors.push(`${pageUrl}: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-
-  result.skipped = skipped
-  if (options.dryRun) {
-    result.plan = [
-      ...articles.map((a) => ({ url: a.url, ...(a.label ? { title: a.label } : {}), ...(a.date ? { date: a.date } : {}), layer: 'article' as const })),
-      ...attachments.map((a) => ({ url: a.url, title: a.label, layer: 'attachment' as const })),
-    ]
-    result.documents = []
-    result.attachments = []
-    return result
-  }
-  for (const a of articles) {
-    if (attempts >= maxDocs) break
-    if (seenDoc.has(a.url)) continue
-    seenDoc.add(a.url)
-    attempts += 1
-    try {
-      // Inspect each selected article too: many official lists only link to a
-      // detail page, and that page contains the actual XLSX/PDF download.
-      const res = await fetchPage(a.url)
-      const html = decodeBody(res.buffer, res.contentType)
-      const date = publicationDate(html, res.url)
-      if (!inWindow(date, options.from, options.to)) continue
-      if (options.includeAttachments) attachments.push(...extractAttachmentLinks(html, res.url))
-      await importOne(a.url, a.label, date)
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err)
-      result.documents.push({ url: a.url, title: a.label, reason })
-      result.errors.push(`${a.url}: ${reason}`)
-    }
-  }
-
-  // Attachments: download & save, parse CSV/XLSX preview rows.
-  if (options.includeAttachments) {
-    const uniq = new Map<string, OfficialAttachment>()
-    for (const att of attachments) if (!uniq.has(att.url)) uniq.set(att.url, att)
-    for (const att of [...uniq.values()].slice(0, maxAttachments)) {
+  try {
+    while (queue.length && result.pagesVisited < maxPages) {
+      active()
+      const pageUrl = queue.shift()!
+      if (visited.has(pageUrl)) continue
+      visited.add(pageUrl)
+      result.pagesVisited++
       try {
-        const res = await fetchPage(att.url)
-        // Save via the same original-store used by policy docs (content-addressed, dedup).
-        const saved = await deps.store.saveOriginal(res.buffer, res.contentType || 'application/octet-stream', sha256Hex(res.buffer))
-        const rowEntry: OfficialCollectResult['attachments'][number] = { url: att.url, label: att.label, kind: att.kind, bytes: res.bytes, savedAs: saved.path }
-        if (att.kind === 'csv') {
-          rowEntry.rows = res.buffer.toString('utf8').split(/\r?\n/).filter(Boolean).length
-        } else if (att.kind === 'xlsx' || att.kind === 'xls') {
-          rowEntry.rows = await (runtime.countExcelRows ?? countExcelRows)(res.buffer, att.kind)
+        const res = await fetchPage(pageUrl)
+        if (!/html|xml|text\/plain/i.test(res.contentType) && !/\.html?$/i.test(new URL(pageUrl).pathname)) {
+          result.errors.push(`跳过非 HTML 页面（${res.contentType}）：${pageUrl}`)
+          continue
         }
-        result.attachments.push(rowEntry)
-      } catch (err) {
-        result.attachments.push({ url: att.url, label: att.label, kind: att.kind, error: err instanceof Error ? err.message : String(err) })
+        let html = decodeBody(res.buffer, res.contentType)
+        if (isAccessControlPage(html)) throw new Error('静态页面为登录/验证码/访问控制页面，不尝试浏览器绕过')
+        let pageBase = res.url
+        const staticLinks = extractArticleLinks(html, pageBase).length
+        if (options.renderJs && (looksScriptRendered(html) || staticLinks === 0)) {
+          if (renderedCount >= renderMaxPages) skipped.overRenderBudget++
+          else {
+            renderedCount++
+            const render = runtime.render ?? renderWithChrome
+            const rendered = await bounded(() => render(res.url, { signal, hosts: deps.hosts, maxBytes: deps.maxBytes, isUrlAllowed: canFetch, timeoutMs: deps.timeoutMs }))
+            const finalUrl = rendered.url ?? res.url
+            if (!rendered.ok || !rendered.html) throw new Error(`渲染失败（${rendered.error ?? '未取得 DOM'}）`)
+            if (!canFetch(finalUrl)) throw new Error(`渲染最终地址不在抓取范围内：${finalUrl}`)
+            if (Buffer.byteLength(rendered.html, 'utf8') > deps.maxBytes) throw new Error(`渲染结果超过上限 ${deps.maxBytes} 字节`)
+            html = rendered.html
+            pageBase = finalUrl
+            result.renderedPages = (result.renderedPages ?? 0) + 1
+          }
+        }
+        active()
+        result.tables += extractTables(html).length
+        for (const link of extractAnchors(html, pageBase)) if (link.url !== pageBase && !inScope(link.url)) countOutOfScope(link.url)
+        const strictArticles = extractArticleLinks(html, pageBase)
+        const candidates = strictArticles.length === 0 && options.looseLinks !== false
+          ? discoverLinks(html, pageBase).filter((a) => !classifyAttachment(a.url) && !isNavigationTitle(a.title) && a.title.length >= 8)
+            .map((a) => ({ url: a.url, label: a.title, date: undefined }))
+          : strictArticles
+        for (const a of candidates) {
+          if (a.url === pageUrl || isNavigationTitle(a.label) || !inWindow(a.date, options.from, options.to)) continue
+          const url = reserve(a.url)
+          if (url) articles.set(url, { ...a, url })
+        }
+        addAttachments(html, pageBase)
+        for (const next of extractNextPageUrls(html, pageBase)) {
+          const url = reserve(next)
+          if (url && !visited.has(url) && !queue.includes(url)) queue.push(url)
+        }
+        const date = publicationDate(html, pageBase)
+        const looksLikeIndex = strictArticles.filter((a) => !isNavigationTitle(a.label)).length >= 4
+        const title = pageTitleOf(html)
+        if (!looksLikeIndex && !isNavigationTitle(title ?? '') && (html.match(/<p\b/gi) ?? []).length >= 3 && attempts < maxDocs
+          && !seenDoc.has(pageBase) && inWindow(date, options.from, options.to)) {
+          seenDoc.add(pageBase)
+          attempts++
+          directPlan.push({ url: pageBase, title, date, layer: 'page' })
+          // Dry-run may inspect the supplied/list pages, but never imports/refetches a body.
+          if (!options.dryRun) await importOne(pageBase, undefined, date)
+        }
+      } catch (error) {
+        result.errors.push(`${pageUrl}: ${error instanceof Error ? error.message : String(error)}`)
+        if (signal.aborted) break
       }
     }
+    active()
+    if (options.dryRun) {
+      result.plan = [
+        ...directPlan,
+        ...[...articles.values()].filter((a) => !seenDoc.has(a.url)).slice(0, maxDocs - attempts).map((a) => ({ url: a.url, title: a.label, date: a.date, layer: 'article' as const })),
+        ...[...attachments.values()].map((a) => ({ url: a.url, title: a.label, layer: 'attachment' as const })),
+      ]
+    } else {
+      for (const a of articles.values()) {
+        active()
+        if (attempts >= maxDocs) break
+        if (seenDoc.has(a.url)) continue
+        seenDoc.add(a.url)
+        attempts++
+        try {
+          const res = await fetchPage(a.url)
+          const html = decodeBody(res.buffer, res.contentType)
+          const date = publicationDate(html, res.url)
+          if (!inWindow(date, options.from, options.to)) continue
+          addAttachments(html, res.url)
+          await importOne(a.url, a.label, date)
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          result.documents.push({ url: a.url, title: a.label, reason })
+          result.errors.push(`${a.url}: ${reason}`)
+          if (signal.aborted) break
+        }
+      }
+      if (options.includeAttachments) for (const att of attachments.values()) {
+        active()
+        try {
+          const res = await fetchPage(att.url)
+          active()
+          const saved = await bounded(() => deps.store.saveOriginal(res.buffer, res.contentType || 'application/octet-stream', sha256Hex(res.buffer)))
+          const rowEntry: OfficialCollectResult['attachments'][number] = { url: att.url, label: att.label, kind: att.kind, bytes: res.bytes, savedAs: saved.path }
+          if (att.kind === 'csv') rowEntry.rows = res.buffer.toString('utf8').split(/\r?\n/).filter(Boolean).length
+          else if (att.kind === 'xlsx' || att.kind === 'xls') rowEntry.rows = await bounded(() => (runtime.countExcelRows ?? countExcelRows)(res.buffer, att.kind, signal))
+          result.attachments.push(rowEntry)
+        } catch (error) {
+          result.attachments.push({ url: att.url, label: att.label, kind: att.kind, error: error instanceof Error ? error.message : String(error) })
+          if (signal.aborted) break
+        }
+      }
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    if (!result.errors.some((e) => e.includes(reason))) result.errors.push(reason)
+  } finally {
+    clearTimeout(timer)
+    deps.signal?.removeEventListener('abort', onAbort)
   }
-
   if (dates.length) {
     const sorted = dates.slice().sort()
     result.coverage = { from: sorted[0], to: sorted[sorted.length - 1] }
   }
-  // Partial failures remain visible rather than reporting unconditional success.
-  result.ok = result.errors.length === 0 && result.attachments.every((att) => !att.error)
+  result.ok = !signal.aborted && result.errors.length === 0 && result.attachments.every((att) => !att.error)
   return result
 }
-
 /** Use local Python (pandas) to count data rows in an Excel attachment, best-effort. */
-async function countExcelRows(buffer: Buffer, kind: AttachmentKind): Promise<number | undefined> {
+async function countExcelRows(buffer: Buffer, kind: AttachmentKind, signal?: AbortSignal): Promise<number | undefined> {
+  signal?.throwIfAborted()
   const dir = await mkdtemp(path.join(tmpdir(), 'policy-xls-'))
   try {
     const file = path.join(dir, kind === 'xls' ? 'a.xls' : 'a.xlsx')
@@ -467,7 +474,7 @@ async function countExcelRows(buffer: Buffer, kind: AttachmentKind): Promise<num
     const py = process.env.DSH_PYTHON_BIN || process.env.PYTHON || 'python'
     const script = 'import sys,pandas as pd;df=pd.read_excel(sys.argv[1]);print(len(df))'
     return await new Promise<number | undefined>((resolve) => {
-      execFile(py, ['-c', script, file], { timeout: 60_000, windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }, (err, stdout) => {
+      execFile(py, ['-c', script, file], { timeout: 60_000, signal, windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }, (err, stdout) => {
         if (err) return resolve(undefined)
         const n = Number(String(stdout).trim())
         resolve(Number.isFinite(n) ? n : undefined)

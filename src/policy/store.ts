@@ -16,6 +16,7 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Logger } from '../log.js'
+import { policyBodyIssue } from './body-quality.js'
 import {
   normalizeText,
   normalizeTitle,
@@ -464,6 +465,8 @@ export class PolicyStore {
     const tokens = query.query ? tokenize(query.query) : []
     const hits: PolicySearchHit[] = []
     for (const doc of this.docs.values()) {
+      // Legacy failed/column records remain inspectable by id, never search evidence.
+      if (policyBodyIssue(doc)) continue
       if (query.issuer && !doc.issuer.includes(query.issuer)) continue
       if (query.docType && doc.docType !== query.docType) continue
       if (query.status && doc.status !== query.status) continue

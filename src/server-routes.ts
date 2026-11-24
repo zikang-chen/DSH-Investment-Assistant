@@ -10,7 +10,8 @@ import type { McpManager } from './mcp/manager.js'
 import { buildStockDossier, dossierSummary } from './data/dossier.js'
 import { buildFundDossier } from './data/fund-dossier.js'
 import { normalizeGlobalRegion } from './data/global-indices.js'
-import { fetchGlobalQuote, fetchGlobalKline } from './data/global-quotes.js'
+import { fetchGlobalQuote, fetchGlobalKline, clampGlobalKlineBars } from './data/global-quotes.js'
+import { fetchSinaFuturesKline } from './data/sina-global-futures.js'
 import { listCnDatasets, fetchCnDataset, checkCnBridge } from './data/cn-datasets.js'
 import { fetchStrategyExperiment } from './strategy/lab-service.js'
 import path from 'node:path'
@@ -1193,10 +1194,16 @@ export function registerRoutes(
           const result = await fetchGlobalQuote(url.searchParams.get('secid') ?? '')
           return sendJson(res, result.ok ? 200 : 400, result)
         }
+        // Explicit separate CFD chart: never change instruments if the COMEX feed recovers mid-request.
+        if (req.method === 'GET' && sub === '/global/gold-cfd') {
+          const result = await fetchSinaFuturesKline('101.GC00Y', clampGlobalKlineBars(url.searchParams.get('limit') ?? undefined))
+          return sendJson(res, result.ok ? 200 : 400, result)
+        }
         if (req.method === 'GET' && sub === '/global/kline') {
           const result = await fetchGlobalKline(
             url.searchParams.get('secid') ?? '',
             url.searchParams.get('limit') ?? undefined,
+            { allowProxyFallback: url.searchParams.get('allow_proxy') === 'true' },
           )
           return sendJson(res, result.ok ? 200 : 400, result)
         }

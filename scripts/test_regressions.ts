@@ -291,17 +291,17 @@ try {
     } finally { internal.atomic = atomic }
     await vault.addNote(item.id, 'after failure'); assert.equal(vault.find(item.id)?.notes.at(-1)?.text, 'after failure')
   })
-  await check('external metadata and index changes refuse overwrite', async () => {
+  await check('external metadata still needs sync; valid external index no longer deadlocks', async () => {
     const file = path.join(vault.dir, item.file), raw = await readFile(file, 'utf8')
     await writeFile(file, raw.replace('title: test', 'title: external'))
     await assert.rejects(vault.update(item.id, { summary: 'overwrite' }), /同步|变化/)
     await writeFile(file, raw)
-    const index = await readFile(vault.indexPath, 'utf8'), before = vault.all()
+    const index = await readFile(vault.indexPath, 'utf8'), count = vault.find(item.id)!.notes.length
     await writeFile(vault.indexPath, index + '\n')
-    await assert.rejects(vault.addNote(item.id, 'blocked'), /索引被外部修改/)
-    assert.deepEqual(vault.all(), before)
-    assert.equal(await readFile(file, 'utf8'), raw)
-    await writeFile(vault.indexPath, index)
+    await vault.addNote(item.id, 'after external index edit')
+    assert.equal(vault.find(item.id)!.notes.length, count + 1)
+    assert.equal((await vault.readDoc(item)).body, 'body')
+    assert.equal((await vault.readDoc(item)).notes.at(-1)?.text, 'after external index edit')
   })
   await check('rollback failure refuses future writes, corrupt index is not reseeded', async () => {
     const v = new ResearchVault(path.join(dir, 'rollback')); const it = await v.create({ title: 'x', source: 'x', occurredAt: '2026-09-29' })

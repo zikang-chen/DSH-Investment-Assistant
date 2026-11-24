@@ -7,6 +7,7 @@
  * never from market reaction.
  */
 import type { PolicyDocument } from './types.js'
+import { policyBodyIssue } from './body-quality.js'
 
 export const EVIDENCE_LEVELS = ['E1', 'E2', 'E3', 'unverified'] as const
 export type EvidenceLevel = (typeof EVIDENCE_LEVELS)[number]
@@ -31,6 +32,8 @@ export function hasQuantity(value: string | undefined): boolean {
 
 /** Grade how strong this document's evidence is, from extracted fields only. */
 export function policyEvidenceLevel(doc: PolicyDocument): { level: EvidenceLevel; reasons: string[] } {
+  const issue = policyBodyIssue(doc)
+  if (issue) return { level: 'unverified', reasons: [issue] }
   const reasons: string[] = []
   const extracted = Boolean(doc.extractionVersion) ||
     doc.policyGoals.length > 0 ||

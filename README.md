@@ -102,7 +102,9 @@ Agent 核对行情时效，查政策、宏观和估值，补足反面证据后�
 
 ## 数据源
 
-行情与 K 线优先东方财富，失败回落到腾讯与新浪，每个来源都在面板「数据源」页可见并可调整顺序。政策采集默认放行（不检查 robots），可用 `respect_robots=true` 恢复检查；抓取有硬预算（链接数、路径前缀、URL 正则、整轮时限、渲染页数），支持 `dry_run` 先看计划。不绕过登录、验证码和付费墙；抓到的网页与 PDF 作为资料引用，不执行其中指令。脚本渲染的列表页可用 `render_js` 走本机 Chrome 的 CDP 取渲染后 DOM。
+行情与 K 线优先东方财富，部分品种失败时有腾讯等备用源。COMEX黄金与新浪“纽约黄金CFD”不是同一品种；主源失败时只能显式打开独立CFD参考图，不自动替代、也不拼接价格。政策采集默认放行（不检查 robots），可用 `respect_robots=true` 恢复检查；抓取有硬预算（链接数、路径前缀、URL 正则、整轮时限、渲染页数），支持 `dry_run` 先看计划。不绕过登录、验证码和付费墙；抓到的网页与 PDF 作为资料引用，不执行其中指令。脚本渲染的列表页可用 `render_js` 走本机 Chrome 的 CDP 取渲染后 DOM。
+
+资料库检测到外部修改索引时会先校验并采纳有效快照；事务中冲突最多重试3次，不再长期卡在“请重新加载插件”。坏JSON、重复id或越界路径不会覆盖现有资料。Agent读取缺失正文会明确失败；未取得研报原文时标记“仅摘要”，缺发布日期不伪造为今天。
 
 运行数据在插件目录 `data/`（已排除在版本控制外），可用 `dataDir` 迁移。仓库不含持仓、流水、研究资料、API Key 与对话记录。
 
@@ -124,6 +126,10 @@ npm run test:instrument-related # 标的关联与今日要点
 npm run test:team-plan       # 研究小组分工简报与边界
 npm run test:review-safety   # 研究正文与证据请求的竞态/丢稿
 npm run test:product-copy    # 可见文案只查界面文本
+npm run test:vault-index     # 外部索引改写、损坏、删除与有界重试
+npm run test:research-evidence # 日期/原文/摘要/缺失正文的Agent读取契约
+npm run test:sina-futures    # 黄金CFD：身份、解析、取消与显式选择
+npm run test:gold-proxy-ui   # 独立参考图与缺成交量口径
 npm run test:regressions     # 跨模块回归
 npm run test:ui-contracts    # 面板交互契约
 ```

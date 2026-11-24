@@ -110,4 +110,86 @@ await check('remove 必须真正落盘：重新加载不会复活', async () => 
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
+await check('dryRun 直接正文页也零入库、零附件下载；计划受 maxDocs 限制', async () => {
+  let fetched = 0
+  const { res, imported } = await run({ dryRun: true, maxDocs: 1, includeAttachments: true }, {
+    '/zhengce/index.html': articleHtml + '<a href="/zhengce/report.pdf">报告全文附件</a><a href="/zhengce/detail.htm">另一篇详细通知正文</a>',
+  }, { fetch: async (url: string) => { fetched++; return { url, contentType: 'text/html', buffer: Buffer.from(articleHtml + '<a href="/zhengce/report.pdf">报告全文附件</a>') } } })
+  assert.equal(imported.length, 0)
+  assert.equal(fetched, 1, '不得为 dryRun refetch 正文/下载附件')
+  assert.equal(res.plan?.filter((p) => p.layer !== 'attachment').length, 1)
+  assert.equal(res.attachments.length, 0)
+})
+
+await check('空候选绝不放宽 path_prefix；允许清单的其它主机也不是授权范围', async () => {
+  const html = '<a href="/other/policy">关于另一栏目工作的通知</a><a href="https://other.gov.cn/zhengce/policy">关于另一个政府站点的通知</a>'
+  const { res } = await run({ dryRun: true, looseLinks: true }, { '/zhengce/index.html': html })
+  assert.deepEqual(res.plan, [])
+  const d = deps(); d.hosts.push('other.gov.cn')
+  const seen: string[] = []
+  await collectOfficialPages(d, { url: 'https://example.gov.cn/zhengce/index.html', dryRun: true }, {
+    gapMs: 0, fetch: (async (url: string) => { seen.push(url); return { url, contentType: 'text/html', buffer: Buffer.from(html) } }) as never,
+  })
+  assert.deepEqual(seen, ['https://example.gov.cn/zhengce/index.html'])
+})
+
+await check('附件遵守同源/前缀/正则和共享 maxLinks；重复URL不重复扣预算', async () => {
+  const calls: string[] = []
+  let saved = 0
+  const d = deps(); d.hosts.push('other.gov.cn'); d.store.saveOriginal = async () => { saved++; return { path: 'memory:pdf' } }
+  const html = '<a href="/zhengce/a.pdf">数据附件一</a>'.repeat(3) + '<a href="/zhengce/b.pdf">数据附件二</a><a href="/else/a.pdf">越界附件</a><a href="https://other.gov.cn/zhengce/a.pdf">跨域附件</a>'
+  const res = await collectOfficialPages(d, { url: 'https://example.gov.cn/zhengce/index.html', includeAttachments: true, maxLinks: 1, urlPattern: '/zhengce/' }, {
+    gapMs: 0, fetch: (async (url: string) => { calls.push(url); return { url, contentType: url.endsWith('.pdf') ? 'application/pdf' : 'text/html', buffer: Buffer.from(url.endsWith('.pdf') ? '%PDF-' : html), bytes: 5 } }) as never,
+  })
+  assert.equal(saved, 1)
+  assert.deepEqual(calls, ['https://example.gov.cn/zhengce/index.html', 'https://example.gov.cn/zhengce/a.pdf'])
+  assert.ok(res.skipped!.overLinkBudget > 0)
+  assert.ok(res.skipped!.linksOutOfScope >= 2)
+})
+
+await check('后续正文和附件解析也受全轮deadline，超时后绝不开始入库', async () => {
+  let imported = 0
+  const d = deps()
+  const res = await collectOfficialPages(d, { url: 'https://example.gov.cn/zhengce/index.html', deadlineMs: 15 }, {
+    gapMs: 0,
+    fetch: (async (url: string) => {
+      if (!url.endsWith('index.html')) await new Promise((resolve) => setTimeout(resolve, 50))
+      return { url, contentType: 'text/html', buffer: Buffer.from(url.endsWith('index.html') ? '<a href="/zhengce/detail.htm">关于开展专项工作的通知</a>' : articleHtml) }
+    }) as never,
+    collectOne: (async () => { imported++; return { ok: true } }) as never,
+  })
+  assert.equal(res.ok, false)
+  assert.equal(res.skipped!.exceededDeadline, true)
+  assert.equal(imported, 0)
+})
+
+await check('预取消和渲染中的取消能停止整个采集，不再执行后续阶段', async () => {
+  const controller = new AbortController(); controller.abort(new Error('用户取消'))
+  let calls = 0
+  const d = deps(); d.signal = controller.signal
+  const res = await collectOfficialPages(d, { url: 'https://example.gov.cn/zhengce/index.html' }, { fetch: (async () => { calls++; throw new Error('不应抓取') }) as never })
+  assert.equal(res.ok, false); assert.equal(calls, 0)
+  const active = new AbortController(); d.signal = active.signal
+  const rendered = await collectOfficialPages(d, { url: 'https://example.gov.cn/zhengce/index.html', renderJs: true }, {
+    gapMs: 0,
+    fetch: (async (url: string) => ({ url, contentType: 'text/html', buffer: Buffer.from('<div id="app"></div>') })) as never,
+    render: async (_url, opts) => { assert.equal(opts.signal?.aborted, false); active.abort(new Error('渲染取消')); return { ok: true, html: articleHtml } },
+    collectOne: (async () => { calls++; return { ok: true } }) as never,
+  })
+  assert.equal(rendered.ok, false); assert.equal(calls, 0)
+})
+
+await check('附件解析阶段也传递全轮signal，超时不启动下一附件', async () => {
+  const d = deps(); const fetched: string[] = []
+  d.store.saveOriginal = async () => ({ path: 'memory:sheet' })
+  const res = await collectOfficialPages(d, { url: 'https://example.gov.cn/zhengce/index.html', includeAttachments: true, deadlineMs: 15 }, {
+    gapMs: 0,
+    fetch: (async (url: string) => { fetched.push(url); return { url, contentType: url.endsWith('.xlsx') ? 'application/octet-stream' : 'text/html', buffer: Buffer.from(url.endsWith('.xlsx') ? 'workbook' : '<a href="/zhengce/one.xlsx">第一份数据附件</a><a href="/zhengce/two.xlsx">第二份数据附件</a>') } }) as never,
+    countExcelRows: async (_buffer, _kind, signal) => { assert.ok(signal); await new Promise((resolve) => setTimeout(resolve, 50)); return 1 },
+  })
+  assert.equal(res.ok, false)
+  assert.equal(res.skipped?.exceededDeadline, true)
+  assert.equal(fetched.some((url) => url.endsWith('two.xlsx')), false)
+})
+
 console.log(`\n[policy-bounds] ${checks} 组通过（离线；真实站点未跑）`)

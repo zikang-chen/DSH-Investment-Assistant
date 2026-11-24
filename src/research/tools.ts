@@ -42,9 +42,12 @@ function normList(v: unknown): string[] {
 
 function dayOf(v: unknown): string {
   const raw = String(v ?? '').trim()
-  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10)
-  const d = new Date(raw)
-  return Number.isNaN(d.getTime()) ? new Date().toISOString().slice(0, 10) : d.toISOString().slice(0, 10)
+  if (!raw) return ''
+  const match = /^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})(?:日|(?=$|[T\s]))/.exec(raw)
+  if (!match) return ''
+  const day = `${match[1]}-${match[2]!.padStart(2, '0')}-${match[3]!.padStart(2, '0')}`
+  const parsed = new Date(`${day}T00:00:00Z`)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === day ? day : ''
 }
 
 /** Compact list row: enough to pick an item, cheap enough for context. */
@@ -62,6 +65,7 @@ function brief(item: ResearchItem) {
     notes: item.notes.length,
     file: item.file,
     origin: item.origin ?? 'panel',
+    missing: item.missing === true,
   }
 }
 
@@ -121,6 +125,8 @@ export async function collectResearch(
   const skipped: Array<{ title: string; reason: string }> = []
   const errors: string[] = []
   const base = { vault: vault.dir, code, kind }
+  // Dedupe against the current local documents, not a stale startup snapshot.
+  await vault.syncFromDisk()
 
   if (kind === 'report') {
     const res = await finance.getResearchReports(code, size, options.signal)
@@ -131,13 +137,15 @@ export async function collectResearch(
       const title = String(row.title ?? '').trim()
       if (!title) continue
       const date = dayOf(row.time)
+      if (!date) { skipped.push({ title, reason: '缺少有效发布日期，不以采集时间代替' }); continue }
       const dup = vault.list({ query: title.slice(0, 20), limit: 50 }).some((i) => i.title === title && i.occurredAt === date)
       if (dup) { skipped.push({ title, reason: '已存在（标题+时间重复）' }); continue }
-      let body = `机构：${row.org ?? '—'}　评级：${row.rating ?? '—'}　类型：${row.type ?? '—'}\n\n${row.summary ?? ''}`
+      let body = `> 仅保存研报摘要/元数据，未取得原文正文。\n\n机构：${row.org ?? '—'}　评级：${row.rating ?? '—'}　类型：${row.type ?? '—'}\n\n${row.summary ?? ''}`
+      let fullBody = false
       if (options.withBody && row.id) {
         const detail = await finance.getResearchReportDetail(row.id, options.signal)
-        if (detail.ok && detail.data?.body) body = detail.data.body
-        else if (!detail.ok) errors.push(`正文获取失败 ${row.id}: ${detail.error}`)
+        if (detail.ok && detail.data?.body?.trim()) { body = detail.data.body; fullBody = true }
+        else errors.push(`正文获取失败 ${row.id}: ${detail.error || '未返回正文'}`)
       }
       saved.push(await vault.create({
         title,
@@ -145,7 +153,7 @@ export async function collectResearch(
         source: row.org ? `${row.org}研报` : 'WeStock 研报',
         occurredAt: date,
         codes: [code],
-        tags: [...new Set(['研报', ...(row.org ? [row.org] : []), ...(row.rating ? [row.rating] : []), ...tags])],
+        tags: [...new Set(['研报', fullBody ? '原文正文' : '仅摘要', ...(row.org ? [row.org] : []), ...(row.rating ? [row.rating] : []), ...tags])],
         summary: row.summary,
         sourceUrl: row.url,
         body,
@@ -161,6 +169,7 @@ export async function collectResearch(
     for (const raw of res.data as Array<Record<string, unknown>>) {
       const row = normalizeNewsRow(raw)
       if (!row.title) continue
+      if (!row.time) { skipped.push({ title: row.title, reason: '缺少有效发布日期，不以采集时间代替' }); continue }
       const dup = vault.list({ query: row.title.slice(0, 20), limit: 50 }).some((i) => i.title === row.title && i.occurredAt === row.time)
       if (dup) { skipped.push({ title: row.title, reason: '已存在（标题+时间重复）' }); continue }
       saved.push(await vault.create({
@@ -250,6 +259,7 @@ export function registerResearchTools(
     },
     output: jsonOut,
     async execute(args) {
+      await vault.syncFromDisk()
       const filter: ResearchFilter = {
         kind: args.kind ? normKind(args.kind) : undefined,
         status: args.status ? normStatus(args.status) : undefined,
@@ -269,10 +279,15 @@ export function registerResearchTools(
     parameters: { id: { type: 'string', required: true } },
     output: jsonOut,
     async execute(args) {
-      const item = vault.find(String(args.id ?? ''))
-      if (!item) return asJson({ ok: false, error: `资料不存在：${args.id}` })
-      const body = await vault.readBody(item)
-      return asJson({ ok: true, vault: vault.dir, path: `${vault.dir}/${item.file}`, item, body })
+      try {
+        await vault.syncFromDisk()
+        const item = vault.find(String(args.id ?? ''))
+        if (!item) return asJson({ ok: false, error: `资料不存在：${args.id}` })
+        const doc = await vault.readDoc(item)
+        if (!doc.exists) return asJson({ ok: false, id: item.id, missing: true, error: '资料正文文件缺失或不可读，不能作为已读取证据' })
+        return asJson({ ok: true, vault: vault.dir, path: `${vault.dir}/${item.file}`, item,
+          body: doc.body, contentStatus: !doc.body.trim() ? 'metadata-only' : item.tags.includes('仅摘要') ? 'summary-only' : 'body' })
+      } catch (error) { return asJson({ ok: false, error: error instanceof Error ? error.message : String(error) }) }
     },
   }))
 
