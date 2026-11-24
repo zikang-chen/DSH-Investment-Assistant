@@ -79,7 +79,8 @@
     "test:review-safety": "tsx scripts/test_review_safety.ts",
     "test:chart-edge-cases": "tsx scripts/test_chart_edge_cases.ts",
     "test:intraday-tool": "tsx scripts/test_intraday_tool.ts",
-    "test:instrument-focus": "tsx scripts/test_instrument_focus.ts"
+    "test:instrument-focus": "tsx scripts/test_instrument_focus.ts",
+    "test:instrument-related": "tsx scripts/test_instrument_related.ts"
   },
   "dsh": {
     "bundle": {

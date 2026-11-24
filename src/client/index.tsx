@@ -13,6 +13,8 @@ import { CnDatasetsPanel } from './cn-datasets-panel.js'
 import { KlineChart } from './kline-chart.js'
 import { IntradayView } from './intraday-view.js'
 import { InstrumentBar, loadFocus, normalizeFocus, saveFocus, focusQuoteKey, type InstrumentFocus } from './instrument-focus.js'
+import { InstrumentRelated } from './instrument-related.js'
+import { TodayBrief, holdingMoves } from './today-brief.js'
 import { MarketChart } from './market-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
 import { CapitalWorkspace, WealthWorkspace } from './capital-workspace.js'
@@ -2718,7 +2720,7 @@ const RS = {
   pre: { margin: 0, whiteSpace: 'pre-wrap', fontFamily: MONO, fontSize: 12, lineHeight: 1.6 } as CSSProperties,
 }
 
-function ResearchView() {
+function ResearchView(props: { requestedId?: string }) {
   const [items, setItems] = useState<VaultItem[]>([])
   const [stats, setStats] = useState<VaultStats>({ total: 0, byKind: {}, byStatus: {}, topCodes: [] })
   const [vaultDir, setVaultDir] = useState('')
@@ -2778,6 +2780,11 @@ function ResearchView() {
   }, [])
 
   useEffect(() => { void load() }, [load])
+  // 从标的关联面板点进来：直接打开那一条（面板已按 id 切过 tab）。
+  useEffect(() => {
+    const id = props.requestedId?.trim()
+    if (id) void open(id)
+  }, [props.requestedId, open])
   // Agent 侧保存 / 本地文件改动（watch → sync）都即时可见。
   useBus((e) => {
     if (e.kind === '__resync') { void load(); return }
@@ -4057,6 +4064,8 @@ function PanelBody(props: {
   const [sourcesDirty, setSourcesDirty] = useState(false)
   /** 当前标的：一次选中，K线/分时/档案/提问都围绕它，切页不丢。 */
   const [focus, setFocusState] = useState<InstrumentFocus | undefined>(() => loadFocus())
+  const [relatedOpen, setRelatedOpen] = useState('')
+  const [researchFocus, setResearchFocus] = useState('')
   const setFocus = useCallback((input: Parameters<typeof normalizeFocus>[0] | undefined) => {
     const next = input ? normalizeFocus(input) : undefined
     setFocusState(next); saveFocus(next)
@@ -4198,7 +4207,13 @@ function PanelBody(props: {
   for (const q of data.quotes) quoteBy.set(keyOf(q.code, q.type ?? 'stock'), q)
   rememberNames([...data.watchlist, ...data.holdings, ...data.quotes])
   const agoText = useAgo(data.at)
-  const focusQuote = focus ? quoteBy.get(keyOf(focus.code, focus.kind === 'fund' ? 'fund' : 'stock')) : undefined
+  const focusQuote = focus
+    ? (() => {
+        const quote = quoteBy.get(keyOf(focus.code, focus.kind === 'fund' ? 'fund' : 'stock'))
+        // 行情字段是 changePercent；上下文条只关心展示，不在这里改协议。
+        return quote ? { price: quote.price ?? null, changePct: quote.changePercent ?? null, asOf: quote.asOf } : undefined
+      })()
+    : undefined
   const openFocusDossier = (target: InstrumentFocus) => {
     if (!selectTab('dossier')) return
     setDossierTarget({
@@ -4216,7 +4231,16 @@ function PanelBody(props: {
     if (!selectTab('quotes')) return
     setChartFromDossier(false)
     const kind = target.kind === 'fund' ? 'fund' : target.kind === 'global' ? 'us' : target.kind
-    setKlineTarget({ code: target.code, kind, ...(target.name ? { name: target.name } : {}), ...(target.secid ? { secid: target.secid } : {}), at: Date.now(), ...(mode === 'intraday' ? { mode } : {}) })
+    setKlineTarget({
+      code: target.code, kind,
+      ...(target.name ? { name: target.name } : {}),
+      ...(target.secid ? { secid: target.secid } : {}),
+      // 全球指数/商品没有本地历史库身份：必须带 market，路由才会按 secid 取行情，
+      // 否则会退化成「用代码查国内历史」，图表空且不报错。
+      ...(target.kind === 'global' ? { market: '全球' } : {}),
+      at: Date.now(),
+      ...(mode === 'intraday' ? { mode } : {}),
+    })
   }
   const panelWidth = usePanelWidth()
   const portfolioSnapshot = {
@@ -4345,12 +4369,36 @@ function PanelBody(props: {
       focus,
       quote: focusQuote,
       ...(data.at ? { liveAt: data.at } : {}),
+      ...(liveError.live ? { staleNote: '行情读取失败，显示上次结果' }
+        : !focusQuote && data.at ? { staleNote: '这只暂时没有报价' } : {}),
       onOpenChart: openFocusChart,
       onOpenDossier: openFocusDossier,
+      onOpenRelated: (target) => setRelatedOpen((open) => (open === `${target.kind}:${target.code}` ? '' : `${target.kind}:${target.code}`)),
       onAsk: askFocus,
-      onClear: () => setFocus(undefined),
+      onClear: () => { setFocus(undefined); setRelatedOpen('') },
+    }) : null,
+    focus && relatedOpen === `${focus.kind}:${focus.code}` ? h(InstrumentRelated, {
+      key: `${focus.kind}:${focus.code}`,
+      code: focus.code,
+      ...(focus.name ? { name: focus.name } : {}),
+      get: apiGet,
+      onOpenResearch: (id) => { if (selectTab('research')) setResearchFocus(String(id)) },
+      onOpenAdvice: (id) => { if (selectTab('advice')) setAdviceSelection(id) },
+      onAsk: () => askFocus(focus),
     }) : null,
     h('div', { className: 'fia-panel-content' },
+      tab === 'home' ? h(TodayBrief, {
+        moves: holdingMoves(data.holdings, (code, type) => {
+          const quote = quoteBy.get(keyOf(code, (type ?? 'stock') as AssetType))
+          return quote ? { changePct: quote.changePercent } : undefined
+        }),
+        holdingCount: data.holdings.length,
+        ...(data.at ? { liveAt: data.at } : {}),
+        get: apiGet,
+        onOpenQuotes: () => { selectTab('quotes') },
+        onOpenAdvice: () => { selectTab('advice') },
+        onOpenResearch: () => { selectTab('research') },
+      }) : null,
       tab === 'home' ? h(OverviewWorkbench, { navigate: selectTab, deliver: deliverToChat, get: apiGet, useBus,
         marketSummary: data.indices.length ? h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } }, data.indices.slice(0, 3).map(ix => h(IndexCard, { key: ix.code, ix }))) : h('p', { style: S.muted }, '暂无可用指数行情；打开行情页重试。'),
         portfolioSummary: h('div', null,
@@ -4372,7 +4420,7 @@ function PanelBody(props: {
       tab === 'macro' ? h(MacroView, { active: tab === 'macro' }) : null,
       tab === 'policy' ? h(PolicyView, { deliver: deliverToChat, focus: policyFocus }) : null,
       tab === 'news' ? h(NewsView, { active: tab === 'news', data, quoteBy }) : null,
-      tab === 'research' ? h(ResearchView, null) : null,
+      tab === 'research' ? h(ResearchView, { ...(researchFocus ? { requestedId: researchFocus } : {}) }) : null,
       tab === 'evidence' ? h(EvidenceInbox, { deliver: deliverToChat }) : null,
       tab === 'learn' ? h(LearningView, { deliver: deliverToChat }) : null,
       tab === 'advice' ? h(InvestmentWorkbench, {

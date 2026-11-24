@@ -81,8 +81,11 @@ export interface InstrumentBarProps {
   quote?: { price?: number | null; changePct?: number | null; asOf?: string } | undefined
   /** 面板已加载的行情时间（不是报价里缺失时的兜底时间）。 */
   liveAt?: string
+  /** 取数异常或该标的没有报价时的就地提示；正常时留空。 */
+  staleNote?: string
   onOpenChart: (focus: InstrumentFocus, mode: 'daily' | 'intraday') => void
   onOpenDossier: (focus: InstrumentFocus) => void
+  onOpenRelated: (focus: InstrumentFocus) => void
   onAsk: (focus: InstrumentFocus) => void
   onClear: () => void
 }
@@ -103,10 +106,12 @@ export function InstrumentBar(props: InstrumentBarProps) {
     }, `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`),
     when ? h('span', { style: { color: 'var(--fia-muted)', fontSize: 11 } },
       `行情 ${String(when).slice(5, 16).replace('T', ' ')}`) : h('span', { style: { color: 'var(--fia-muted)', fontSize: 11 } }, '行情时点未知'),
+    props.staleNote ? h('span', { role: 'status', style: { fontSize: 11, color: 'var(--fia-warning, #8A5700)' } }, props.staleNote) : null,
     h('span', { style: { flex: 1 } }),
     button('K线', () => props.onOpenChart(focus, 'daily')),
     button('分时', () => props.onOpenChart(focus, 'intraday')),
     button('档案', () => props.onOpenDossier(focus)),
+    button('相关', () => props.onOpenRelated(focus)),
     button('问 Agent', () => props.onAsk(focus)),
     h('button', { type: 'button', 'aria-label': '取消当前标的', onClick: props.onClear,
       style: { border: 0, background: 'transparent', color: 'var(--fia-muted)', cursor: 'pointer', fontSize: 14, lineHeight: 1 } }, '×'))
