@@ -29,7 +29,8 @@ export function codeMatches(assets: readonly string[] | undefined, code: string)
 }
 
 export function researchLine(item: RelatedResearchItem): string {
-  return [item.date ? String(item.date).slice(0, 10) : '', item.kind ?? '', item.title].filter(Boolean).join(' · ')
+  const kind = item.kind ? KIND_LABEL[item.kind] ?? item.kind : ''
+  return [item.date ? String(item.date).slice(0, 10) : '', kind, item.title].filter(Boolean).join(' · ')
 }
 
 const KIND_LABEL: Record<string, string> = {

@@ -3,6 +3,7 @@ import { Button } from './design-system/index.js'
 import type { PortfolioPolicyInput } from '../strategy/portfolio-policy.js'
 import type { PortfolioVersionEntry } from '../strategy/portfolio-versions.js'
 import type { ReadApi } from './workbench-model.js'
+import { BacktestBuilder } from './backtest-builder.js'
 
 type Post = <T>(path:string,body:Record<string,unknown>)=>Promise<T>
 const STATE_LABEL: Record<string, string> = { draft: '草案', review: '待审阅', approved: '纸面跟踪中', rejected: '已驳回', retired: '已退役' }
@@ -59,7 +60,8 @@ export function PortfolioOperations({ get, post, policy, onLoad, loadedVersionId
       <details><summary>价格、汇率与基金披露</summary><textarea aria-label="组合核验输入" rows={10} style={{width:'100%',boxSizing:'border-box'}} value={verification} onChange={e=>setVerification(e.target.value)}/><Button disabled={busy||!verification.trim()} onClick={()=>void run(async()=>setOutput(await post('/strategy/verify',JSON.parse(verification))))}>运行核验</Button></details>
     </section>
     <section className="fia-research-section"><h3>历史再平衡（纸面）</h3>
-      <details><summary>运行回测</summary>
+      <BacktestBuilder get={get} post={post} onResult={(result) => setOutput(result)} />
+      <details><summary>高级：直接编辑输入 JSON</summary>
         <p className="fia-muted">需要含来源的原始价格、权重、费用税费与公司行动；缺公司行动覆盖声明只能输出部分口径。</p>
         <textarea aria-label="多资产回测输入" rows={12} placeholder="有来源的 PortfolioBacktestInput JSON" style={{width:'100%',boxSizing:'border-box'}} value={testInput} onChange={e=>setTestInput(e.target.value)}/>
         <Button disabled={busy||!testInput.trim()} onClick={()=>void run(async()=>setOutput(await post('/strategy/backtest',JSON.parse(testInput))))}>运行回测</Button>

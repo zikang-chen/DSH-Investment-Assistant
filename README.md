@@ -125,6 +125,7 @@ npm run test:review-safety   # 研究正文与证据请求的竞态/丢稿
 npm run test:instrument-focus # 当前标的身份/持久化/降级
 npm run test:instrument-related # 标的关联与今日要点
 npm run test:team-plan       # 研究小组分工简报与边界
+npm run test:backtest-builder # 回测输入装配（取价/权重/跨币种拒绝）
 npm run test:product-copy    # 可见文案只查界面文本
 npm run test:regressions     # 19 组
 npm run test:quant           # 28

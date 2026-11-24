@@ -23,9 +23,11 @@ check('代码匹配：大小写、后缀、空白都容错，但不做前缀匹�
   assert.equal(codeMatches(['600519'], ''), false)
 })
 
-check('资料行格式：日期/类型/标题，缺字段不出现空分隔符', () => {
-  assert.equal(researchLine({ id: 'a', title: '黄金研判', kind: 'decision', date: '2026-11-24T03:00:00Z' }), '2026-11-24 · decision · 黄金研判')
+check('资料行格式：日期/中文类型/标题，缺字段不出现空分隔符', () => {
+  assert.equal(researchLine({ id: 'a', title: '黄金研判', kind: 'decision', date: '2026-11-24T03:00:00Z' }), '2026-11-24 · 决策 · 黄金研判')
+  assert.equal(researchLine({ id: 'c', title: '研报标题', kind: 'report', date: '2026-11-20' }), '2026-11-20 · 研报 · 研报标题')
   assert.equal(researchLine({ id: 'b', title: '仅有标题' }), '仅有标题')
+  assert.equal(researchLine({ id: 'd', title: '未知类型', kind: 'weird' }), 'weird · 未知类型', '未知类型原样显示，不编造中文')
 })
 
 check('持仓异动：缺行情不算 0，未达阈值不报，按幅度降序', () => {
