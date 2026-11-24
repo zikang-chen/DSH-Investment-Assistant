@@ -88,6 +88,22 @@ function fetchOptions(deps: CollectDeps): FetchOptions {
 }
 
 /** Fetch one URL and upsert it. The only writer of `documents/` for collected content. */
+/** 页面样板词：命中 ≥2 个说明抓到的是页脚/备案/版权，不是正文。 */
+const BOILERPLATE_MARKERS = ['ICP备', '网站标识码', '版权所有', '主办单位', '京公网安备', '网站地图', '联系我们']
+
+/**
+ * 正文质量闸门：太短或样板词过多都判 parse_failed，不当作政策正文入库。
+ * 阈值写死在这里，调用方不能放宽——否则每跑一次就污染一次资料库。
+ */
+export function bodyQuality(text: string): { ok: boolean; chars: number; markers: number; reason?: string } {
+  const body = String(text ?? '').replace(/\s+/g, '')
+  const chars = body.length
+  const markers = BOILERPLATE_MARKERS.filter((marker) => body.includes(marker)).length
+  if (chars < 300) return { ok: false, chars, markers, reason: `正文过短（${chars} 字 < 300）` }
+  if (markers >= 2) return { ok: false, chars, markers, reason: `正文疑似页脚/备案信息（命中 ${markers} 个样板词）` }
+  return { ok: true, chars, markers }
+}
+
 /** 标题清洗：去标签/实体/多余空白，过长截断。标题里残留标签会直接暴露在列表里。 */
 function cleanTitle(raw: string | undefined, fallback: string): string {
   const text = String(raw ?? '')
@@ -100,10 +116,16 @@ function cleanTitle(raw: string | undefined, fallback: string): string {
   return text.length > 120 ? `${text.slice(0, 118)}…` : text
 }
 
-export async function collectOne(deps: CollectDeps, input: CollectOneInput): Promise<CollectOneResult> {
+export interface CollectOneRuntime {
+  /** 注入抓取函数（离线测试用）；默认走真实网络。 */
+  fetch?: typeof fetchPolicyDocument
+}
+
+export async function collectOne(deps: CollectDeps, input: CollectOneInput, runtime: CollectOneRuntime = {}): Promise<CollectOneResult> {
   const log = deps.logger?.child('policy.collect')
   try {
-    const res = await fetchPolicyDocument(input.url, fetchOptions(deps))
+    const fetchDocument = runtime.fetch ?? fetchPolicyDocument
+    const res = await fetchDocument(input.url, fetchOptions(deps))
     const kind = detectPayloadKind(res.contentType, res.buffer)
     const rawHash = sha256Hex(res.buffer)
     const original = await deps.store.saveOriginal(res.buffer, res.contentType, rawHash)
@@ -144,6 +166,16 @@ export async function collectOne(deps: CollectDeps, input: CollectOneInput): Pro
     if (!text && parseStatus === 'ok') {
       parseStatus = 'failed'
       parseError = '正文为空（页面可能依赖脚本渲染）'
+    }
+
+    if (parseStatus === 'ok' && kind !== 'pdf') {
+      const quality = bodyQuality(text)
+      if (!quality.ok) {
+        // 质量不达标就不入库：宁可少一篇，也不要往政策库里塞页脚与备案号。
+        const reason = quality.reason ?? '正文质量不达标'
+        log?.warn('body rejected', { url: res.url, chars: quality.chars, markers: quality.markers, reason })
+        return { url: input.url, ok: false, error: `正文质量不达标：${reason}` }
+      }
     }
 
     const result = await deps.store.upsert({

@@ -76,7 +76,17 @@ const STRATEGY_BODY = [
 ]
 
 function htmlDoc(opts: { title: string; published: string; body: string[]; number?: string; issuer?: string; nav?: string }): string {
-  const paras = opts.body.map((p) => `<p>${p}</p>`).join('\n')
+  // 正文质量闸门要求 ≥300 字：fixture 用不重复的段落补足（重复段落会被清洗规则合并）。
+  const padded = [...opts.body]
+  let total = padded.join('').length
+  let index = 0
+  while (total < 600) {
+    index += 1
+    const filler = `第${index}项，各地区各部门要压实责任、细化措施（编号${index}），确保各项任务落地见效，并按季度报送进展情况与整改说明。`
+    padded.push(filler)
+    total += filler.length
+  }
+  const paras = padded.map((p) => `<p>${p}</p>`).join('\n')
   return `<!doctype html><html><head><meta charset="utf-8">
 <title>${opts.title}</title>
 <meta property="article:published_time" content="${opts.published}">
@@ -223,11 +233,20 @@ await test('修订版：保留旧版全文并升版本', async () => {
   assert.ok(!history.includes('600亿元'))
 })
 await test('robots.txt 禁止的路径：默认放行，显式开启检查时拒绝', async () => {
-  const allowed = await collectOne(deps, { url: `${base}/blocked/doc.html`, sourceId: 'fixture', sourceClass: 'official', issuer: '国务院', docType: 'other' })
-  assert.equal(allowed.ok, true, '默认不检查 robots')
-  const blocked = await collectOne({ ...deps, respectRobots: true }, { url: `${base}/blocked/doc.html`, sourceId: 'fixture', sourceClass: 'official', issuer: '国务院', docType: 'other' })
-  assert.equal(blocked.ok, false)
-  assert.match(blocked.error ?? '', /robots/)
+  // 用独立 store，避免把测试页面写进主库影响后续断言。
+  const isolatedDir = await mkdtemp(path.join(os.tmpdir(), 'finance-policy-robots-'))
+  const isolated = new PolicyStore(isolatedDir)
+  await isolated.load()
+  const isolatedDeps = { ...deps, store: isolated }
+  try {
+    const allowed = await collectOne(isolatedDeps, { url: `${base}/blocked/doc.html`, sourceId: 'fixture', sourceClass: 'official', issuer: '国务院', docType: 'other' })
+    assert.equal(allowed.ok, true, '默认不检查 robots')
+    const blocked = await collectOne({ ...isolatedDeps, respectRobots: true }, { url: `${base}/blocked/doc.html`, sourceId: 'fixture', sourceClass: 'official', issuer: '国务院', docType: 'other' })
+    assert.equal(blocked.ok, false)
+    assert.match(blocked.error ?? '', /robots/)
+  } finally {
+    await rm(isolatedDir, { recursive: true, force: true })
+  }
 })
 await test('源站 500：明确失败且不写入伪造文档', async () => {
   const before = store.stats().total
