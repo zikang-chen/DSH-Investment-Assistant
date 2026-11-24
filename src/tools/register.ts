@@ -13,6 +13,7 @@ import { fetchAndBuildGlobalNewsRadar } from '../news/global-radar.js'
 import { fetchGlobalQuote, fetchGlobalKline } from '../data/global-quotes.js'
 import { listCnDatasets, fetchCnDataset, checkCnBridge } from '../data/cn-datasets.js'
 import { dossierToolResult } from './dossier-data.js'
+import { registerIntradayTools } from './intraday.js'
 import { fetchStrategyExperiment } from '../strategy/lab-service.js'
 import { reviewStrategyEnvironment } from '../strategy/lab.js'
 import { evaluatePortfolioPolicy, type PortfolioPolicyInput } from '../strategy/portfolio-policy.js'
@@ -53,6 +54,8 @@ const jsonOut = {
 }
 
 export function registerTools(ctx: Context, finance: FinanceDataService, store: PortfolioStore, analyses: AnalysisStore, bus: PanelBus, personal?: PersonalStore, library?: StrategyLibrary) {
+  registerIntradayTools(ctx, finance)
+
   // 个股深度档案：一次调用拿到该标的的行情外全部维度（研究/资金/股东/风险/资讯/产业链，
   // A 股另有东财公司事件明细与全球财务；口径/时点随 section 返回）。
   ctx.tools.register(defineTool({

@@ -263,9 +263,10 @@ async function emKlineBySecid(secid: string, args: Record<string, unknown>, ctx:
 /** 分时：当日或近 5 日分钟级价格。A/H/美股各用对应 secid 前缀。 */
 async function emIntraday(args: Record<string, unknown>, ctx: ProviderContext) {
   const kindRaw = String(args.kind ?? 'a')
-  const kind = kindRaw === 'hk' || kindRaw === 'us' ? kindRaw : 'a'
+  const kind = kindRaw === 'hk' || kindRaw === 'us' || kindRaw === 'global' ? kindRaw : 'a'
   const series = await fetchIntraday(String(args.code ?? '600519'), kind, Number(args.days ?? 1), {
     ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(args.secid ? { secid: String(args.secid) } : {}),
   })
   return { data: series, rows: series.points, sampleKeys: ['code', 'name', 'preClose', 'points', 'source'] }
 }
@@ -273,9 +274,10 @@ async function emIntraday(args: Record<string, unknown>, ctx: ProviderContext) {
 /** 分时备用源：腾讯分钟接口（只有当日，5 日会显式拒绝）。 */
 async function txIntraday(args: Record<string, unknown>, ctx: ProviderContext) {
   const kindRaw = String(args.kind ?? 'a')
-  const kind = kindRaw === 'hk' || kindRaw === 'us' ? kindRaw : 'a'
+  const kind = kindRaw === 'hk' || kindRaw === 'us' || kindRaw === 'global' ? kindRaw : 'a'
   const series = await fetchTxIntraday(String(args.code ?? '600519'), kind, Number(args.days ?? 1), {
     ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(args.secid ? { secid: String(args.secid) } : {}),
   })
   return { data: series, rows: series.points, sampleKeys: ['code', 'preClose', 'points', 'source'] }
 }

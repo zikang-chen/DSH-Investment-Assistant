@@ -3,10 +3,10 @@ import { IntradayChart } from './intraday-chart.js'
 import type { IntradaySeries } from '../data/intraday.js'
 
 export type IntradayRead = <T>(path: string, signal?: AbortSignal) => Promise<T>
-export function IntradayView({ code, kind, days, get }: {
-  code: string; kind: string; days: number; get: IntradayRead
+export function IntradayView({ code, kind, days, get, secid }: {
+  code: string; kind: string; days: number; get: IntradayRead; secid?: string
 }) {
-  const identity = `${kind}:${code}:${days}`
+  const identity = `${kind}:${code}:${secid ?? ''}:${days}`
   const [retry, setRetry] = useState(0)
   const [state, setState] = useState<{ identity: string; data?: IntradaySeries; error?: string; refreshing?: boolean }>({ identity: '' })
   useEffect(() => {
@@ -23,7 +23,7 @@ export function IntradayView({ code, kind, days, get }: {
       setState(old => old.identity === identity ? { ...old, refreshing: true } : { identity, refreshing: true })
       try {
         const result = await get<IntradaySeries & { ok: boolean; error?: string }>(
-          `/intraday?code=${encodeURIComponent(code)}&kind=${encodeURIComponent(kind)}&days=${days}`, controller.signal)
+          `/intraday?code=${encodeURIComponent(code)}&kind=${encodeURIComponent(kind)}&days=${days}${secid ? `&secid=${encodeURIComponent(secid)}` : ''}`, AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]))
         if (!active) return
         if (!result.ok || !result.points?.some(p => p.price !== null && Number.isFinite(p.price) && p.price > 0)) {
           throw new Error(result.error || '未取得有效分时价格')
@@ -44,7 +44,7 @@ export function IntradayView({ code, kind, days, get }: {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', visible)
     }
-  }, [code, kind, days, retry, get])
+  }, [code, kind, secid, days, retry, get])
   // 切换身份后的第一帧也不能显示上一标的的数据。
   const current = state.identity === identity ? state : undefined
   return h('div', null,
@@ -53,8 +53,9 @@ export function IntradayView({ code, kind, days, get }: {
       h('button', { type: 'button', onClick: () => setRetry(v => v + 1) }, '重试')) : null,
     current?.data ? h('div', null,
       h(IntradayChart, { points: current.data.points, preClose: current.data.preClose,
-        kind: kind as 'a' | 'hk' | 'us', days, title: `${current.data.name || code} · ${days > 1 ? '5日分时' : '分时'}` }),
+        kind: current.data.timezone === 'unknown' ? 'global' : current.data.kind, days, title: `${current.data.name || code} · ${days > 1 ? '5日分时' : '分时'}` }),
       h('div', { role: 'status', style: { fontSize: 11, opacity: 0.7 } },
-        `${current.data.source} · 最新数据 ${current.data.points.at(-1)?.time ?? '—'}${current.refreshing ? ' · 更新中' : ''}`))
+        `${current.data.source} · 最新数据 ${current.data.points.at(-1)?.time ?? '—'} · ${current.data.timezone === 'unknown' ? '源时间（时区未核准）' : '北京时间'}${current.refreshing ? ' · 更新中' : ''}`),
+      current.data.warnings?.length ? h('div', { style: { fontSize: 11, opacity: 0.7 } }, current.data.warnings.join('；')) : null)
       : !current?.error ? h('div', { role: 'status', style: { padding: 16, fontSize: 12 } }, '正在读取分时…') : null)
 }

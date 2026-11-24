@@ -186,7 +186,7 @@ export function registerWestockTools(ctx: Context, finance: FinanceDataService) 
 
   ctx.tools.register(defineTool({
     name: 'get_minute_data',
-    description: '获取分时数据（WeStock minute）：当日或近 5 日分钟级价量。',
+    description: 'WeStock minute 兼容入口：获取分钟级价量。统一跨市场分时与有界分页请用 get_intraday_data。',
     parameters: {
       code: { type: 'string', required: true },
       days: { type: 'number', description: '1 或 5，默认 1' },

@@ -16,7 +16,7 @@ export const EM_INTRADAY_URL = 'https://push2his.eastmoney.com/api/qt/stock/tren
 export const INTRADAY_TIMEOUT_MS = 12_000
 export const INTRADAY_MAX_DAYS = 5
 
-export type IntradayKind = 'a' | 'hk' | 'us'
+export type IntradayKind = 'a' | 'hk' | 'us' | 'global'
 
 export interface IntradayPoint {
   /** 源侧时间原文，如 2026-11-23 09:30。 */
@@ -38,7 +38,13 @@ export interface IntradaySeries {
   preClose: number | null
   points: IntradayPoint[]
   source: string
+  /** 抓取时间；不是行情时间。 */
   at: string
+  secid?: string
+  timezone?: 'Asia/Shanghai' | 'unknown'
+  volumeUnit?: 'shares' | 'lots' | 'source'
+  amountUnit?: 'CNY' | 'HKD' | 'source'
+  warnings?: string[]
 }
 
 function num(value: string | undefined): number | null {
@@ -61,13 +67,14 @@ function toIso(time: string): string | null {
 
 function bareCode(code: string, kind: IntradayKind): string {
   const raw = stripMarketSuffix(code)
-  if (kind === 'us') return raw.trim().toUpperCase()
+  if (kind === 'us' || kind === 'global') return raw.trim().toUpperCase()
   if (kind === 'hk') return raw.replace(/\D/g, '').padStart(5, '0').slice(-5)
   return normalizeCode(raw)
 }
 
 /** 东财 secid：A 股 1./0.，港股 116.；美股这里只给首候选，fetchIntraday 会发现真实市场。 */
 export function intradaySecid(code: string, kind: IntradayKind): string {
+  if (kind === 'global') throw new Error('全球分时必须提供证券解析得到的 secid')
   if (kind === 'hk') return `116.${bareCode(code, kind)}`
   if (kind === 'us') return `105.${bareCode(code, kind)}`
   return `${emSecMarket(code)}.${normalizeCode(code)}`
@@ -113,7 +120,7 @@ export function parseIntradayPayload(payload: unknown, meta: IntradayMeta): Intr
     void open; void high; void low
     points.push({
       time: time.trim(),
-      at,
+      at: meta.kind === 'global' ? null : at,
       price: num(close),
       avgPrice: num(avgPrice),
       volume: num(volume),
@@ -127,9 +134,13 @@ export function parseIntradayPayload(payload: unknown, meta: IntradayMeta): Intr
     kind: meta.kind,
     days: meta.days,
     preClose: typeof data?.preClose === 'number' && Number.isFinite(data.preClose) ? data.preClose : null,
-    points,
+    points: [...new Map(points.map(p => [p.time, p])).values()].sort((a, b) => a.time.localeCompare(b.time)),
     source: 'eastmoney-push2his-trends2',
     at: new Date().toISOString(),
+    ...(meta.secid ? { secid: meta.secid } : {}),
+    timezone: meta.kind === 'global' ? 'unknown' : 'Asia/Shanghai',
+    volumeUnit: 'source', amountUnit: 'source',
+    warnings: meta.kind === 'global' ? ['保留源侧日期时分；该品种时区与成交量额单位未核准，ISO时间留空。'] : ['分钟量额使用源单位；不可跨品种直接相加。'],
   }
 }
 
@@ -153,7 +164,7 @@ export async function fetchIntraday(
   if (options.secid !== undefined) {
     const m = /^(\d{1,3})\.([A-Za-z0-9._-]{1,24})$/.exec(explicit ?? '')
     const markets = kind === 'us' ? ['105', '106', '107'] : kind === 'hk' ? ['116'] : ['0', '1']
-    if (!m || !markets.includes(m[1]!) || bareCode(m[2]!, kind) !== canonicalCode) {
+    if (!m || (kind !== 'global' && !markets.includes(m[1]!)) || bareCode(m[2]!, kind) !== canonicalCode) {
       throw new Error('分时 secid 与代码/市场不匹配')
     }
     explicit = `${m[1]}.${canonicalCode}`
@@ -175,7 +186,7 @@ export async function fetchIntraday(
         ndays: String(ndays),
       }, { timeoutMs: INTRADAY_TIMEOUT_MS, referer: 'https://quote.eastmoney.com/', ...(options.signal ? { signal: options.signal } : {}) })
       options.signal?.throwIfAborted()
-      return parseIntradayPayload(json, { code, kind, days: ndays, secid, requireIdentity: kind === 'us' && !explicit })
+      return parseIntradayPayload(json, { code, kind, days: ndays, secid, requireIdentity: kind === 'global' || (kind === 'us' && !explicit) })
     } catch (error) {
       options.signal?.throwIfAborted()
       errors.push(`${secid}: ${error instanceof Error ? error.message : String(error)}`)
@@ -217,6 +228,7 @@ export function parseTxMinutePayload(
   if (!day || !toIso(`${day} 00:00`)) throw new Error('腾讯分时缺少有效行情日期')
   let prevVol: number | null = 0
   let prevAmount: number | null = 0
+  let previousAt: string | null = null
   // 腾讯 A 股累计量单位是「手」，成交额是「元」：算均价要乘 100 换成股。
   const shareFactor = meta.kind === 'a' ? 100 : 1
   const points: IntradayPoint[] = []
@@ -229,9 +241,11 @@ export function parseTxMinutePayload(
     if (!at) throw new Error(`腾讯分时时间非法：${hhmm}`)
     const cumV = num(cumVol)
     const cumA = num(cumAmount)
-    // 缺口后的第一笔只恢复累计基线，差分仍未知；计数倒退也不能伪造为 0。
-    const vol = cumV === null || prevVol === null || cumV < prevVol ? null : cumV - prevVol
-    const amount = cumA === null || prevAmount === null || cumA < prevAmount ? null : cumA - prevAmount
+    // 跨分钟缺口的累计差不是“这一分钟”的量；只在相邻分钟（或09:30首点）计算。
+    const consecutive = previousAt ? Date.parse(at) - Date.parse(previousAt) === 60_000 : hhmm === '0930'
+    const vol = !consecutive || cumV === null || prevVol === null || cumV < prevVol ? null : cumV - prevVol
+    const amount = !consecutive || cumA === null || prevAmount === null || cumA < prevAmount ? null : cumA - prevAmount
+    previousAt = at
     prevVol = cumV !== null && cumV >= 0 ? cumV : null
     prevAmount = cumA !== null && cumA >= 0 ? cumA : null
     points.push({
@@ -261,6 +275,9 @@ export function parseTxMinutePayload(
     points,
     source: 'tencent-minute',
     at: new Date().toISOString(),
+    timezone: 'Asia/Shanghai',
+    volumeUnit: meta.kind === 'a' ? 'lots' : 'shares',
+    amountUnit: meta.kind === 'a' ? 'CNY' : meta.kind === 'hk' ? 'HKD' : 'source',
   }
 }
 
@@ -275,6 +292,7 @@ export async function fetchTxIntraday(
   const ndays = Math.max(1, Math.floor(days) || 1)
   if (ndays > 1) throw new Error('备用分时源只支持当日（1 日），5 日分时需要东财可用')
   // 腾讯美股分钟只剩一条日终聚合价，画不出分时；明确拒绝而不是给一条单点曲线。
+  if (kind === 'global') throw new Error('该 secid 品种没有已核准的腾讯分钟映射，不以同代码股票替代')
   if (kind === 'us') throw new Error('备用分时源没有美股分钟数据，美股分时需要东财可用')
   const symbol = txIntradaySymbol(code, kind)
   const json = await (options.fetchJson ?? httpGetJson)(TX_INTRADAY_URL, { code: symbol }, {

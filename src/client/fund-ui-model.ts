@@ -15,7 +15,7 @@ export const FUND_RANK_MAX_PAGE_SIZE = 50
 /** Fund NAVs are disclosed T+1; the date column is the data date, not a live quote. */
 export const FUND_NAV_T1_NOTE = '基金净值按 T+1 披露：净值日期是数据日期，不是实时成交价。'
 export const FUND_NAV_T1_TAG = '净值日 · T+1'
-export const FUND_SEARCH_ONLY_NOTE = '基金页只接受基金候选；股票、指数或其他证券候选不会在此打开。'
+export const FUND_SEARCH_ONLY_NOTE = '请选择基金；股票请到行情页查看。'
 
 export const FUND_TYPES = [
   { value: 'all', label: '全部' },

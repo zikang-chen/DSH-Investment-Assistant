@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, EmptyState, PageHeader, StatusBadge, formatDate, formatNumber } from './design-system/index.js'
-import { KlineChart, type KlineMarker } from './kline-chart.js'
+import type { KlineMarker } from './kline-chart.js'
+import { MarketChart } from './market-chart.js'
+import { isExchangeFund, chartInstrument } from './chart-instrument.js'
 import type { RawBar } from './kline-math.js'
 import { SecuritySearch } from './security-search.js'
 import { SECURITY_CSS } from './security-styles.js'
@@ -176,6 +178,7 @@ export function SecurityWorkspace(props: {
     finally { setSending(false) }
   }
   const displayName = data ? dossierName(data, identity?.name) : identity?.name || identity?.code
+  const chartKind = identity?.type === 'fund' ? 'fund' : identity ? historyKindRef.current?.(identity) ?? chartInstrument(identity).kind : 'a'
   return <div className="fia-page fia-security-page" data-testid="finance-security-detail">
     <style>{SECURITY_CSS}</style>
     <PageHeader title="证券资料与综合研究" eyebrow="SECURITY DOSSIER" description="先选对股票或基金，再查看原始资料、K线与证据。AI判断和事实资料分开呈现。" actions={props.onBack && <Button onClick={props.onBack}>← 返回上一页</Button>} />
@@ -185,12 +188,13 @@ export function SecurityWorkspace(props: {
     {error && <div role="alert" className="fia-notice fia-notice--error">{error}{identity && <Button onClick={() => void load(identity)}>重试</Button>}</div>}
     {!identity && <EmptyState title="用名称片段或代码查找" description="例如输入“中国”，从数据源返回的多个候选中选择准确的市场与代码。也可以从持仓、基金排行和自选名称点击进入。" />}
     {identity && isGlobalSecurity(identity) && <div className="fia-research-section"><h3>行情走势（{identity.market ?? '海外市场'}）</h3>
-      {historyNote ? <div className="fia-notice fia-notice--error" role="alert">{historyNote}</div> : history.bars.length ? <KlineChart bars={history.bars} markers={history.events} title={`${displayName} · ${identity.market ?? '海外'}日K`} height={300} /> : <p className="fia-muted">{busy ? '正在读取行情…' : '暂无K线数据，可能该市场历史不可用或代码不存在。'}</p>}
+      <MarketChart code={identity.code} kind={chartKind} secid={identity.secid} name={displayName} bars={history.bars} markers={history.events} get={props.get} height={300} loading={busy} error={historyNote} onRetry={() => void load(identity)} />
       <div className="fia-security-data-meta">
         {globalQuote ? <><span>最新 {formatNumber(globalQuote.price ?? null, { decimals: 2 })}</span><span>{typeof globalQuote.change === 'number' ? `涨跌 ${globalQuote.change >= 0 ? '+' : ''}${formatNumber(globalQuote.change, { decimals: 2 })}` : '涨跌额缺失'}</span><span>{(globalQuote.source ?? 'eastmoney')}</span></> : <span>行情读取中或不可用</span>}
       </div>
       <p className="fia-muted">海外个股来自东方财富按 secid 的行情与日K，可能延迟；不含该市场的本地档案维度（财报/资金流等以该市场实际可得为准，缺失不补）。涨跌不构成买卖建议。</p>
     </div>}
-    {data && <><div className="fia-research-section"><h3>{identity?.type === 'fund' ? '净值走势' : '行情走势'}</h3>{identity?.type === 'fund' ? <FundNavChart series={navSeries} note={navNote} /> : historyNote ? <div className="fia-notice fia-notice--error" role="alert">本地历史读取失败：{historyNote}。这不等于“没有数据”，请检查代码与市场类型后重试。</div> : history.bars.length ? <KlineChart bars={history.bars} markers={history.events} title={`${displayName} · 本地历史K线`} height={280} /> : <p className="fia-muted">本地尚无已缓存的历史K线，不代表没有交易数据。点击“打开K线工作区”可进入行情页的对应图表并同步；基金使用净值走势，不代表实时成交价。</p>}</div>{data.sections.map(section => <DossierSection section={section} key={`${data.snapshotId ?? data.at}-${section.key}`} />)}<p className="fia-muted">抓取时间不等于数据时点。资金流按数据源算法统计，不等于公司现金流；机构预期不等于公司承诺。年报PDF若尚未解析，需由Agent取得可核验原文后再引用。</p></>}
+    {identity && !isGlobalSecurity(identity) && <div className="fia-research-section"><h3>{identity.type === 'fund' && !isExchangeFund(identity.code) ? '净值走势' : '行情走势'}</h3>{identity?.type === 'fund' && !isExchangeFund(identity.code) ? <FundNavChart series={navSeries} note={navNote} /> : identity ? <MarketChart code={identity.code} kind={chartKind} secid={identity.secid} name={displayName} bars={history.bars} markers={history.events} get={props.get} height={280} loading={busy} error={historyNote} onRetry={() => void load(identity)} /> : null}</div>}
+    {data && <>{data.sections.map(section => <DossierSection section={section} key={`${data.snapshotId ?? data.at}-${section.key}`} />)}<p className="fia-muted">抓取时间不等于数据时点。资金流按数据源算法统计，不等于公司现金流；机构预期不等于公司承诺。年报PDF若尚未解析，需由Agent取得可核验原文后再引用。</p></>}
   </div>
 }

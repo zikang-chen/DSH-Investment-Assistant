@@ -23,8 +23,8 @@ test('portfolio usage requires explicit per-request consent and keeps risk const
   assert.match(text, /不要执行交易/)
 })
 test('delivery requested / copied / failed states are distinct and do not invent execution', () => {
-  assert.match(deliveryFeedback('sent'), /已请求提交/)
-  assert.match(deliveryFeedback('sent'), /确认收到/)
+  assert.match(deliveryFeedback('sent'), /已请求发送/)
+  assert.match(deliveryFeedback('sent'), /目标对话查看/)
   assert.match(deliveryFeedback('copied'), /未自动发送/)
   assert.match(deliveryFeedback('failed'), /未能发送/)
   assert.doesNotMatch(deliveryFeedback('sent'), /已保存|分析完成/)

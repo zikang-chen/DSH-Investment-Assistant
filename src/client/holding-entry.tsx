@@ -101,12 +101,12 @@ export function HoldingEntry(props: HoldingEntryProps) {
         <div className="fia-holding-entry__full">
           {props.get
             ? <SecuritySearch get={props.get} onSelect={securitySelected} onQueryChange={queryChanged}
-              label="证券代码 / 名称" placeholder="输入代码或名称片段，选择真实匹配候选" compact />
+              label="证券代码 / 名称" placeholder="输入代码或名称，选择证券" compact />
             : <div className="fia-holding-entry__field">
               <label htmlFor={`${id}-search-unavailable`}>证券代码 / 名称</label>
               <input id={`${id}-search-unavailable`} disabled value="" placeholder="搜索服务未连接" />
             </div>}
-          <p className="fia-holding-entry__hint">代码或名称片段均可搜索；必须选择候选。修改输入后须重新选择，不能沿用旧代码。</p>
+          <p className="fia-holding-entry__hint">从搜索结果中选择要添加的证券。</p>
           {!props.get && <p className="fia-holding-entry__error" role="alert">搜索服务未连接，无法核验证券；暂不能生成持仓预览。</p>}
           {errors.security && <p className="fia-holding-entry__error" role="alert">{errors.security}</p>}
           {draft.selected && <div className="fia-holding-entry__selection">
@@ -124,7 +124,7 @@ export function HoldingEntry(props: HoldingEntryProps) {
           <select id={`${id}-type`} name="type" value={draft.selected?.type ?? ''} disabled aria-describedby={`${id}-type-help`}>
             <option value="">选择候选后识别</option><option value="stock">股票</option><option value="fund">基金</option>
           </select>
-          <p id={`${id}-type-help`} className="fia-holding-entry__hint">由候选的市场 / 类型识别；不按代码位数猜测基金。</p>
+          <p id={`${id}-type-help`} className="fia-holding-entry__hint">选择证券后自动填写。</p>
         </div>
         <div className="fia-holding-entry__field">
           <label htmlFor={`${id}-quantity`}>数量（{unit}）</label>
@@ -138,24 +138,24 @@ export function HoldingEntry(props: HoldingEntryProps) {
           <input id={`${id}-cost`} name="avgCost" className="fia-holding-entry__number" type="number" inputMode="decimal" min="0" step="any" required
             value={draft.avgCost} placeholder="填写每股 / 每份成本" aria-invalid={!!errors.avgCost} aria-describedby={`${id}-cost-help${errors.avgCost ? ` ${id}-cost-error` : ''}`}
             onChange={event => setDraft(current => ({ ...current, avgCost: event.target.value }))} />
-          <p id={`${id}-cost-help`} className="fia-holding-entry__hint">每股 / 每份成本，与证券报价同币种；不自动换算汇率。</p>
+          <p id={`${id}-cost-help`} className="fia-holding-entry__hint">按证券报价币种填写每股 / 每份成本。</p>
           {errors.avgCost && <p id={`${id}-cost-error`} className="fia-holding-entry__error" role="alert">{errors.avgCost}</p>}
         </div>
-        <p className="fia-holding-entry__hint fia-holding-entry__full">数量与成本允许显式填写 0，空白不会按 0 处理。此表单只生成变更预览，不直接写入持仓。</p>
+        <p className="fia-holding-entry__hint fia-holding-entry__full">请填写数量与平均成本。</p>
       </fieldset>
       <div className="fia-holding-entry__actions">
         <Button type="submit" variant="primary" disabled={submitting || !props.get || unchangedPending}>
-          {submitting ? '正在生成预览…' : unchangedPending ? '已生成待确认预览' : '生成持仓预览'}
+          {submitting ? '正在生成预览…' : unchangedPending ? '待确认' : '预览持仓'}
         </Button>
-        <Button onClick={props.onReview}>去首页人工确认</Button>
+        <Button onClick={props.onReview}>查看待确认</Button>
       </div>
     </form>
-    {submitting && <p className="fia-holding-entry__hint" role="status" aria-live="polite">正在等待预览回执，尚未写入持仓；请勿重复提交。</p>}
+    {submitting && <p className="fia-holding-entry__hint" role="status" aria-live="polite">正在生成持仓预览…</p>}
     {feedback && <div className="fia-holding-entry__feedback" role={feedback.kind === 'error' ? 'alert' : 'status'} aria-live="polite">
-      <StatusBadge tone={feedback.kind === 'confirmation' ? 'warning' : 'danger'}>{feedback.kind === 'confirmation' ? '待人工确认 · 未写入' : '预览未完成'}</StatusBadge>
+      <StatusBadge tone={feedback.kind === 'confirmation' ? 'warning' : 'danger'}>{feedback.kind === 'confirmation' ? '待确认' : '预览失败'}</StatusBadge>
       <p>{feedback.security}</p>
       <p>{feedback.message}</p>
-      <Button onClick={props.onReview}>前往个人首页核对</Button>
+      <Button onClick={props.onReview}>去首页核对</Button>
     </div>}
   </section>
 }

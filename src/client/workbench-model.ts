@@ -128,7 +128,7 @@ export const FRESHNESS_LABEL: Record<string, string> = { fresh: '时效：新鲜
 
 export function deliveryFeedback(outcome: DeliveryOutcome): string {
   return outcome === 'sent'
-    ? '已请求提交到绑定会话，请在目标对话确认收到。保存研究后这里会自动更新。'
+    ? '已请求发送，请在目标对话查看。研究保存后会显示在这里。'
     : outcome === 'copied'
       ? '未自动发送，问题已复制。请在目标会话粘贴发送。'
       : '未能发送。请在面板上方绑定一个已打开的会话后重试。'

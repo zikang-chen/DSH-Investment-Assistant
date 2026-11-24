@@ -186,8 +186,18 @@ export class FinanceDataService {
   }
 
   /** 分时：当日或近 5 日分钟级价格（A/H/美股）。返回 registry 结果，序列在 `data`。 */
-  async getIntraday(code: string, kind: 'a' | 'hk' | 'us' = 'a', days = 1, signal?: AbortSignal) {
-    return this.registry.call<import('./intraday.js').IntradaySeries>('intraday', { code, kind, days }, signal)
+  async getIntraday(code: string, kind: 'a' | 'hk' | 'us' | 'global' = 'a', days = 1, signal?: AbortSignal, secid?: string) {
+    if (!Number.isInteger(days) || days < 1 || days > 5) throw new Error('days 只支持 1–5 的整数')
+    if (secid) {
+      const match = /^(\d{1,3})\.([A-Za-z0-9._-]{1,24})$/.exec(secid.trim())
+      if (!match) throw new Error('无效的 secid')
+      const market = match[1]!, symbol = match[2]!
+      if (code.trim() && code.trim().toUpperCase() !== symbol.toUpperCase()) throw new Error('分时 secid 与 code 不匹配')
+      code = symbol
+      kind = ['0','1'].includes(market) ? 'a' : market === '116' ? 'hk' : ['105','106','107'].includes(market) ? 'us' : 'global'
+    }
+    if (!code.trim()) throw new Error('code 或 secid 必填')
+    return this.registry.call<import('./intraday.js').IntradaySeries>('intraday', { code, kind, days, ...(secid ? { secid: secid.trim() } : {}) }, signal)
   }
 
   /**

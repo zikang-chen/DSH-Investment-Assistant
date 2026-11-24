@@ -36,6 +36,17 @@ const VOL_HEIGHT = 46
 const PANE_GAP = 8
 const AXIS_HEIGHT = 18
 
+/** Convert CSS-screen coordinates to the canvas, then hit-test inside its price plot. */
+export function klinePointerAt(
+  clientX: number, clientY: number,
+  rect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'> | undefined,
+  width: number, height: number, total: number, viewport: Viewport,
+): { x: number; y: number; index: number } {
+  const x = (clientX - (rect?.left ?? 0)) * (rect && rect.width > 0 ? width / rect.width : 1)
+  const y = (clientY - (rect?.top ?? 0)) * (rect && rect.height > 0 ? height / rect.height : 1)
+  return { x, y, index: indexAtX(x - PAD_LEFT, width - PAD_LEFT - PAD_RIGHT, total, viewport) }
+}
+
 export function KlineChart(props: KlineChartProps) {
   const { markers = [], title = 'K 线图' } = props
   const height = props.height ?? 300
@@ -62,6 +73,7 @@ export function KlineChart(props: KlineChartProps) {
   const agg = useMemo(() => aggregateBars(bars, period), [bars, period])
   const mas = useMemo(() => movingAverages(agg), [agg])
   const total = agg.length
+  const hasBars = bars.length > 0
   // Reset to the latest bars when the dataset or period changes (not on every refresh
   // that keeps the same range), so switching symbol/周期 never leaves a stale empty window.
   const dataSig = `${agg.length}|${agg[0]?.date ?? ''}|${agg[agg.length - 1]?.date ?? ''}|${period}`
@@ -76,16 +88,16 @@ export function KlineChart(props: KlineChartProps) {
   const range = useMemo(() => visibleRange(total, vp), [total, vp])
   const pal = useMemo(() => financeChartPalette(resolved, marketMode), [resolved, marketMode])
 
-  // 尺寸：容器宽度跟随布局；canvas 按 DPR 放大，保证高分屏不糊。
+  // 空态没有容器：首次取得数据时重挂测宽；再次清空或卸载时断开旧 observer。
   useLayoutEffect(() => {
     const el = containerRef.current
     if (!el) return
     const measure = () => setWidth(Math.max(140, el.clientWidth))
     measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    ro?.observe(el)
+    return () => ro?.disconnect()
+  }, [hasBars])
 
   // ---- 绘制 ----
   useEffect(() => {
@@ -273,30 +285,28 @@ export function KlineChart(props: KlineChartProps) {
     return () => canvas.removeEventListener('wheel', onWheel)
   }, [zoomAt])
 
-  const barIndexFromEvent = useCallback((clientX: number): { x: number; index: number } => {
-    const canvas = canvasRef.current
-    const rect = canvas?.getBoundingClientRect()
-    const x = rect ? clientX - rect.left : clientX
-    return { x, index: indexAtX(x, width - PAD_LEFT - PAD_RIGHT, total, vp) }
-  }, [width, total, vp])
+  const barIndexFromEvent = useCallback((clientX: number, clientY: number) => {
+    return klinePointerAt(clientX, clientY, canvasRef.current?.getBoundingClientRect(), width, height, total, vp)
+  }, [width, height, total, vp])
 
   const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     ;(e.target as HTMLCanvasElement).setPointerCapture(e.pointerId)
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const hit = barIndexFromEvent(e.clientX, e.clientY)
+    pointersRef.current.set(e.pointerId, { x: hit.x, y: hit.y })
     if (pointersRef.current.size === 2) {
       const [a, b] = [...pointersRef.current.values()]
       pinchRef.current = { dist: Math.abs(a!.x - b!.x) + Math.abs(a!.y - b!.y), count: vp.count }
       dragRef.current = null
     } else {
-      dragRef.current = { x: e.clientX, offset: vp.offset, moved: false }
+      dragRef.current = { x: hit.x, offset: vp.offset, moved: false }
     }
-    const hit = barIndexFromEvent(e.clientX)
-    setCross({ x: hit.x, y: e.nativeEvent.offsetY, index: hit.index })
+    setCross(hit)
   }
 
   const onPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    const hit = barIndexFromEvent(e.clientX, e.clientY)
     const map = pointersRef.current
-    if (map.has(e.pointerId)) map.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (map.has(e.pointerId)) map.set(e.pointerId, { x: hit.x, y: hit.y })
     if (map.size >= 2 && pinchRef.current) {
       const [a, b] = [...map.values()]
       const dist = Math.abs(a!.x - b!.x) + Math.abs(a!.y - b!.y)
@@ -312,12 +322,11 @@ export function KlineChart(props: KlineChartProps) {
     const drag = dragRef.current
     if (drag) {
       const slot = (width - PAD_LEFT - PAD_RIGHT) / Math.max(1, vp.count)
-      const deltaBars = Math.round((drag.x - e.clientX) / Math.max(2, slot))
+      const deltaBars = Math.round((drag.x - hit.x) / Math.max(2, slot))
       if (deltaBars !== 0) drag.moved = true
       setViewport((v) => panViewport({ count: v.count, offset: drag.offset }, deltaBars, total))
     }
-    const hit = barIndexFromEvent(e.clientX)
-    setCross({ x: hit.x, y: e.nativeEvent.offsetY, index: hit.index })
+    setCross(hit)
   }
 
   const onPointerUp = (e: ReactPointerEvent<HTMLCanvasElement>) => {

@@ -90,6 +90,7 @@ export class ProviderRegistry {
   private readonly wsGate: Semaphore
   /** In-flight requests keyed by cache key, so concurrent duplicates share one call. */
   private readonly inflight = new Map<string, Promise<ProviderCallResult<unknown>>>()
+  private policyRevision = 0
   private readonly counters = {
     calls: 0,
     cacheHits: 0,
@@ -200,6 +201,8 @@ export class ProviderRegistry {
       if (dropped.length) this.log?.warn('dropped unknown providers from policy', { capability: cap, dropped })
     }
     this.policy = clean
+    this.policyRevision++
+    this.inflight.clear()
     this.cache.clear()
     if (persist) {
       await mkdir(path.dirname(this.policyPath), { recursive: true })
@@ -280,6 +283,7 @@ export class ProviderRegistry {
     opts: CallOptions | AbortSignal = {},
   ): Promise<ProviderCallResult<T>> {
     const options: CallOptions = opts instanceof AbortSignal ? { signal: opts } : opts
+    options.signal?.throwIfAborted()
     const cacheKey = `${capability}:${JSON.stringify(args)}`
 
     const fresh = this.cache.get<ProviderCallResult<T>>(cacheKey)
@@ -289,7 +293,7 @@ export class ProviderRegistry {
     }
 
     // 并发去重：同一 capability+参数的重复请求只打一次上游。
-    const pending = this.inflight.get(cacheKey)
+    const pending = options.signal ? undefined : this.inflight.get(cacheKey)
     if (pending) {
       this.counters.coalesced++
       return (await pending) as ProviderCallResult<T>
@@ -325,19 +329,21 @@ export class ProviderRegistry {
     options: CallOptions,
   ): Promise<ProviderCallResult<T>> {
     const started = Date.now()
+    const revision = this.policyRevision
     const promise = this.attempt<T>(capability, args, options)
-    this.inflight.set(cacheKey, promise as Promise<ProviderCallResult<unknown>>)
+    if (!options.signal) this.inflight.set(cacheKey, promise as Promise<ProviderCallResult<unknown>>)
     let result: ProviderCallResult<T>
     try {
       result = await promise
+      options.signal?.throwIfAborted()
     } finally {
-      this.inflight.delete(cacheKey)
+      if (this.inflight.get(cacheKey) === promise) this.inflight.delete(cacheKey)
     }
     this.counters.calls++
     this.counters.latencyMs += Date.now() - started
     this.counters.latencyCount++
     // 失败也短期缓存：否则面板每次刷新都会重新等一个已经不通的源超时。
-    this.cache.set(cacheKey, result, result.ok === false ? this.failTtlMs : undefined)
+    if (revision === this.policyRevision) this.cache.set(cacheKey, result, result.ok === false ? this.failTtlMs : undefined)
     if (result.ok === false) this.log?.debug('capability failed', { capability, error: result.error, cachedSec: this.failTtlMs / 1000 })
     return result
   }
@@ -361,6 +367,7 @@ export class ProviderRegistry {
     const ctx: ProviderContext = { timeoutMs: options.timeoutMs ?? this.options.httpTimeoutMs, signal: options.signal }
 
     for (const providerId of order) {
+      options.signal?.throwIfAborted()
       const meta = PROVIDER_BY_ID.get(providerId)
       if (!meta || meta.capability !== capability) continue
       if (this.circuitOpen(providerId)) {
@@ -369,7 +376,8 @@ export class ProviderRegistry {
       }
       const started = Date.now()
       try {
-        const data = await this.gate(providerId, () => meta.call(args, ctx))
+        const data = await this.gate(providerId, () => { options.signal?.throwIfAborted(); return meta.call(args, ctx) })
+        options.signal?.throwIfAborted()
         this.recordProvider(providerId, true, Date.now() - started)
         this.breaker.delete(providerId)
         return {
@@ -379,6 +387,7 @@ export class ProviderRegistry {
           data: (data.data ?? data.rows ?? data) as T,
         }
       } catch (err) {
+        options.signal?.throwIfAborted()
         const message = err instanceof Error ? err.message : String(err)
         attempts.push({ provider: providerId, error: message })
         this.recordProvider(providerId, false, Date.now() - started)

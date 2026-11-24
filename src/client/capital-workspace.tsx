@@ -3,10 +3,11 @@ import {
   Button, EmptyState, MetricCard, PageHeader, StatusBadge,
   formatDate, formatMoney, formatNumber, formatPercent,
 } from './design-system/index.js'
-import { deliveryFeedback, type Deliver, type ReadApi, type UsePanelBus } from './workbench-model.js'
+import { type Deliver, type ReadApi, type UsePanelBus } from './workbench-model.js'
+import { CapitalProduct } from './capital-product.js'
 import {
-  ACCOUNT_TYPE_LABEL, CAPITAL_NETWORTH_REQUEST, INITIAL_WEALTH_FORM, WEALTH_FIELDS,
-  capitalCurrencyRows, parseWealthNumber, portfolioPrincipal, wealthInputKey, wealthRequest,
+  INITIAL_WEALTH_FORM, WEALTH_FIELDS,
+  parseWealthNumber, portfolioPrincipal, wealthInputKey, wealthRequest,
   type CapitalPayload, type PortfolioSnapshot, type PrincipalSource, type WealthContext,
   type WealthFieldErrors, type WealthForm, type WealthPlansPayload, type WealthResult,
 } from './capital-ui-model.js'
@@ -53,112 +54,13 @@ function CapitalBusSubscriber({ useBus, refresh }: { useBus: UsePanelBus; refres
   return null
 }
 
-/** Local ledger is display-only. Model delivery is exclusively the explicit net-worth button. */
+/** Account and transaction reads stay local; explicit draft review uses the existing delivery API. */
 export function CapitalWorkspace(props: CapitalWorkspaceProps) {
   const [state, refresh] = useLocalRead<CapitalPayload>(props.get, '/capital')
-  const [sending, setSending] = useState(false)
-  const [feedback, setFeedback] = useState('')
-  const delivery = useRef(0)
-  useEffect(() => () => { delivery.current++ }, [])
-  const requestNetworth = async () => {
-    if (sending) return
-    const id = ++delivery.current
-    setSending(true)
-    setFeedback('')
-    try {
-      const outcome = await props.deliver(CAPITAL_NETWORTH_REQUEST)
-      if (delivery.current === id) setFeedback(deliveryFeedback(outcome))
-    } catch (error) {
-      if (delivery.current === id) setFeedback(`请求未发送：${errorText(error)}`)
-    } finally { if (delivery.current === id) setSending(false) }
-  }
-  const data = state.data
-  const accounts = data?.accounts ?? []
-  const accountNames = new Map(accounts.map(account => [account.accountId, account.name]))
-  const currencyRows = data ? capitalCurrencyRows(data) : []
   return <div className="fia-capital-workspace">
     <style>{capitalWorkspaceCss}</style>
     {props.useBus && <CapitalBusSubscriber useBus={props.useBus} refresh={refresh} />}
-    <PageHeader title="我的资本" description="持仓估值与交易账本分开展示 · 不重复计入整体资产。" actions={<>
-      <Button onClick={() => void refresh()} disabled={state.pending}>{state.pending ? '读取中…' : '刷新账本'}</Button>
-      <Button variant="primary" onClick={() => void requestNetworth()} disabled={sending}>{sending ? '提交请求中…' : '让 Agent 算净资产'}</Button>
-    </>} />
-    <div className="fia-cw-meta">
-      <StatusBadge>只读账本</StatusBadge>
-      {data && <><span>账户 {formatNumber(data.accounts?.length, 0)}</span><span>流水 {formatNumber(data.events, 0)} 笔</span></>}
-      <span>本页不会自动向模型发送账本；点击净资产按钮才提交原有计算请求。</span>
-    </div>
-    <div className="fia-cw-stack">
-      {feedback && <Message tone="info">{feedback}</Message>}
-      {state.error && <Message tone="error">账本读取失败：{state.error}{data ? '。下方保留上次成功快照，不代表最新账本。' : '。请点击刷新账本重试。'}</Message>}
-      {!data && state.pending && <Message>正在读取本机账本…</Message>}
-      <Section title="当前持仓估值快照" meta="与交易账本分开列示">
-        <div className="fia-cw-body"><p className="fia-cw-note">持仓快照和下方交易账本是不同账源，可能重复记录同一资产；本页不会相加或重复计入净资产。</p>
-          <p className="fia-cw-note">快照时间：{props.portfolio?.at ? formatDate(props.portfolio.at, { includeTime: true }) : '未注明'}{props.portfolio?.basis ? ` · ${props.portfolio.basis}` : ''}</p></div>
-        {!props.portfolio?.groups.length ? <div className="fia-cw-body"><p className="fia-cw-note">当前未提供持仓估值。下方账本仍可单独查看；无估值不等于资产为零。</p></div> :
-          <ScrollTable label="与账本独立的分币种持仓估值"><table className="fia-table fia-cw-table fia-cw-table--wide">
-            <caption>按各币种的元分别列示，不换汇、不合计。缺价时不能把已定价部分或成本视为完整市值。</caption>
-            <thead><tr><th scope="col">币种</th><th scope="col" data-numeric="true">持仓成本</th><th scope="col" data-numeric="true">持仓现值</th><th scope="col" data-numeric="true">持仓浮动盈亏</th><th scope="col">估值完整性</th></tr></thead>
-            <tbody>{props.portfolio.groups.map(group => <tr key={group.currency}><td>{group.currency}</td>
-              <td data-numeric="true">{formatMoney(group.cost, { currency: group.currency, symbol: false })}</td>
-              <td data-numeric="true">{formatMoney(group.value, { currency: group.currency, symbol: false })}{!!group.missing.length && group.value !== null && <span className="fia-cw-id">仅已定价部分</span>}</td>
-              <td data-numeric="true">{formatMoney(group.missing.length ? undefined : group.profit, { currency: group.currency, symbol: false })}</td>
-              <td>{portfolioPrincipal(props.portfolio, group.currency).ok ? <StatusBadge>估值完整</StatusBadge> : <><StatusBadge tone="warning">估值不完整</StatusBadge><span className="fia-cw-id">{group.missing.length ? `待补行情：${group.missing.join('、')}` : '未提供完整现值'}</span></>}</td>
-            </tr>)}</tbody>
-          </table></ScrollTable>}
-        <div className="fia-cw-body"><p className="fia-cw-note">整体资产覆盖：贵金属、现金及其他资产需有真实记录、持有单位、价格与必要汇率。未登记或未定价的部分不能视为零，也不能据本页推定总净资产。</p></div>
-      </Section>
-      {data && <>
-        {accounts.length === 0 ? <EmptyState title="还没有资本账户" description="账本记录入金、买卖、分红、费用和换汇，不等于持仓快照。在对话里说明要建立的账户及真实流水，再由 Agent 记账；本页不自动创建或修改账户。" /> :
-          <div className="fia-cw-split">
-            <Section title="账户" meta={`${accounts.length} 个账户`}>
-              <ScrollTable label="资本账户列表"><table className="fia-table fia-cw-table">
-                <thead><tr><th scope="col">账户名称 / 标识</th><th scope="col">类型</th><th scope="col">记账币种</th></tr></thead>
-                <tbody>{accounts.map(account => <tr key={account.accountId}>
-                  <td>{account.name}<span className="fia-cw-id">{account.accountId}</span></td>
-                  <td>{ACCOUNT_TYPE_LABEL[account.accountType] ?? account.accountType}</td><td>{account.baseCurrency}</td>
-                </tr>)}</tbody>
-              </table></ScrollTable>
-            </Section>
-            <Section title="现金余额" meta="原币种 · 未换算">
-              {!data.cash?.length ? <div className="fia-cw-body"><p className="fia-cw-note">当前无现金余额记录。</p></div> :
-                <ScrollTable label="按账户与币种的现金余额"><table className="fia-table fia-cw-table">
-                  <thead><tr><th scope="col">账户</th><th scope="col">币种</th><th scope="col" data-numeric="true">余额（原币元）</th></tr></thead>
-                  <tbody>{data.cash.map((cash, index) => <tr key={`${cash.accountId}-${cash.currency}-${index}`}>
-                    <td>{accountNames.get(cash.accountId) ?? cash.accountId}</td><td>{cash.currency}</td>
-                    <td data-numeric="true">{formatMoney(cash.amount, { currency: cash.currency, symbol: false })}</td>
-                  </tr>)}</tbody>
-                </table></ScrollTable>}
-            </Section>
-          </div>}
-        <Section title="账本持仓成本" meta="数量单位未回传 · 成本不是市值">
-          {!data.positions?.length ? <div className="fia-cw-body"><p className="fia-cw-note">当前无持仓成本记录；未展示的市值和未实现收益不等于零。</p></div> :
-            <ScrollTable label="持仓数量与原币成本"><table className="fia-table fia-cw-table fia-cw-table--wide">
-              <caption>数量按账本原值显示，接口未提供持有单位；不能把贵金属等资产默认解释为股 / 份或克。平均成本按每账本原始单位列示。</caption>
-              <thead><tr><th scope="col">标的代码</th><th scope="col">币种</th><th scope="col" data-numeric="true">数量（账本原始单位）</th><th scope="col" data-numeric="true">总成本（原币元）</th><th scope="col" data-numeric="true">平均成本（原币元 / 原始单位）</th></tr></thead>
-              <tbody>{data.positions.map(position => <tr key={`${position.assetId}-${position.currency}`}>
-                <td>{position.assetId}</td><td>{position.currency}</td>
-                <td data-numeric="true">{formatNumber(position.quantity, { minimumFractionDigits: 0, maximumFractionDigits: 6 })}</td>
-                <td data-numeric="true">{formatMoney(position.cost, { currency: position.currency, symbol: false })}</td>
-                <td data-numeric="true">{formatMoney(position.averageCost, { currency: position.currency, symbol: false, maximumFractionDigits: 4 })}</td>
-              </tr>)}</tbody>
-            </table></ScrollTable>}
-        </Section>
-        <Section title="资金与已实现项目" meta="各币种分别列示 · 不跨币种求和">
-          {currencyRows.length === 0 ? <div className="fia-cw-body"><p className="fia-cw-note">暂无可列示的分币种金额。</p></div> :
-            <ScrollTable label="各币种现金、投入和已实现项目"><table className="fia-table fia-cw-table fia-cw-table--wide">
-              <caption>金额单位为各币种的元；“—”表示该项未提供，不按零计入。本表不计算净资产。</caption>
-              <thead><tr><th scope="col">币种</th><th scope="col" data-numeric="true">现金</th><th scope="col" data-numeric="true">外部净投入</th><th scope="col" data-numeric="true">已实现收益</th><th scope="col" data-numeric="true">费用 / 税费</th><th scope="col" data-numeric="true">分红 / 利息</th></tr></thead>
-              <tbody>{currencyRows.map(row => <tr key={row.currency}>
-                <td>{row.currency}</td>{([row.cash, row.netInvested, row.realized, row.fees, row.income]).map((value, index) =>
-                  <td data-numeric="true" key={index}>{formatMoney(value, { currency: row.currency, symbol: false })}</td>)}
-              </tr>)}</tbody>
-            </table></ScrollTable>}
-        </Section>
-        <Message>本交易账本未接入行情与汇率：不显示账本估值或未实现收益，也不会将不同币种直接合计。上方独立持仓快照不并入本账本。{data.note && <p className="fia-cw-note">账本接口说明：{data.note}</p>}</Message>
-        {!!data.warnings?.length && <Message tone="warning"><strong>账本注意事项</strong><ul>{data.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></Message>}
-      </>}
-    </div>
+    <CapitalProduct get={props.get} data={state.data} pending={state.pending} error={state.error} refresh={refresh} deliver={props.deliver} portfolio={props.portfolio} />
   </div>
 }
 

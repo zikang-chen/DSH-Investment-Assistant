@@ -12,6 +12,7 @@ import { PortfolioStrategy } from './portfolio-strategy.js'
 import { CnDatasetsPanel } from './cn-datasets-panel.js'
 import { KlineChart } from './kline-chart.js'
 import { IntradayView } from './intraday-view.js'
+import { MarketChart } from './market-chart.js'
 import { SourcesWorkspace } from './sources-workspace.js'
 import { CapitalWorkspace, WealthWorkspace } from './capital-workspace.js'
 import { HoldingEntry } from './holding-entry.js'
@@ -1060,6 +1061,9 @@ function useBus(fn: (e: BusMsg) => void): void {
 function useLive() {
   const [data, setData] = useState<LiveData>(EMPTY)
   const [loading, setLoading] = useState(false)
+  /** 读失败要能被看见：否则首屏失败会伪装成「没有持仓 / 暂无指数」。 */
+  const [error, setError] = useState<{ state?: string; live?: string }>({})
+  const [liveAt, setLiveAt] = useState('')
   const inflight = useRef(false)
   const again = useRef(false)
 
@@ -1067,7 +1071,8 @@ function useLive() {
     try {
       const s = await apiGet<Partial<LiveData>>('/state')
       setData((d) => ({ ...d, holdings: s.holdings ?? [], watchlist: s.watchlist ?? [], portfolioPath: s.portfolioPath }))
-    } catch { /* keep prior */ }
+      setError((e) => (e.state ? { ...e, state: undefined } : e))
+    } catch (err) { setError((e) => ({ ...e, state: errText(err) })) }
   }, [])
 
   const loadLive = useCallback(async () => {
@@ -1086,7 +1091,9 @@ function useLive() {
         watchlist: s.watchlist ?? [],
         portfolioPath: s.portfolioPath,
       })
-    } catch { /* keep prior */ } finally {
+      setLiveAt(s.at ?? new Date().toISOString())
+      setError((e) => (e.live ? { ...e, live: undefined } : e))
+    } catch (err) { setError((e) => ({ ...e, live: errText(err) })) } finally {
       inflight.current = false
       if (again.current) {
         again.current = false
@@ -1128,7 +1135,7 @@ function useLive() {
     void loadLive()
   })
 
-  return { data, loading, loadLive, mutate }
+  return { data, loading, loadLive, loadState, mutate, error, liveAt }
 }
 
 // ---- shared add controls ----
@@ -1225,9 +1232,12 @@ function GlobalIndicesPanel() {
       openRow ? h('div', { style: { borderTop: `1px solid ${R.line}`, paddingTop: 8 } },
         h('div', { style: { ...S.title, marginBottom: 6 } }, `${openRow.name} · 日K${indexBars?.bars?.length ? ` · ${indexBars.bars.length} 根（${String(indexBars.bars[0]!.date).slice(0, 10)} → ${String(indexBars.bars[indexBars.bars.length - 1]!.date).slice(0, 10)}）` : ''}${indexBars?.secid === openRow.secid && indexBars.source === 'tencent-kline' ? ' · 腾讯兜底' : ''}`),
         indexBars?.secid === openRow.secid
-          ? (indexBars.error ? h('div', { role: 'alert', style: { ...S.muted, color: DANGER, fontSize: 12 } }, indexBars.error) : indexBars.bars.length ? h(KlineChart, { bars: indexBars.bars, title: `${openRow.name} 日K`, height: 280 }) : h('div', { style: S.muted }, '暂无K线数据。'))
+          ? h(MarketChart, { code: openRow.secid, kind: 'global', secid: openRow.secid, name: openRow.name,
+            bars: indexBars.bars, get: apiGet, height: 280,
+            ...(indexBars.error ? { error: indexBars.error } : {}),
+            onRetry: () => void toggleIndex(openRow) })
           : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 140 }))) : null,
-      h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：东方财富全球指数，不可用时日K回落腾讯；默认美国。点击任一指数可展开日K线。点位与显示精度以源为准。')))
+      h('div', { style: { ...S.muted, fontSize: 11, lineHeight: 1.6 } }, '来源：东方财富全球指数，不可用时日K回落腾讯。点击指数可展开日K或分时。')))
 }
 
 function QuotesView(props: {
@@ -2055,28 +2065,26 @@ function KlineView(props: { data: LiveData; requested?: { code: string; kind: st
           `数据边界：${manifest.coverage?.from ?? '—'} → ${manifest.coverage?.to ?? '—'}（${manifest.bars} 根 · ${manifest.events} 事件）· 内容哈希 ${manifest.contentHash.slice(0, 8)}`
           + (manifest.gaps.length ? `｜疑似长间隔 ${manifest.gaps.map((g) => `${g.from}~${g.to} 间隔 ${g.weekdays} 个工作日`).join('、')}（未扣法定休市/停牌，非确定缺失）` : '｜未发现长间隔（不等于完整性已核验）')
           + (manifest.eventsMissingAvailableAt ? `｜${manifest.eventsMissingAvailableAt} 财报事件可得日缺失（不可作回测证据）` : '')) : null)),
-    view !== 'kline'
-      ? loaded ? h('div', { style: { ...S.group, padding: 9 } }, h(IntradayView, {
-          key: `${loaded.kind}:${loaded.code}:${view}`, code: loaded.code, kind: loaded.kind,
-          days: view === 'intraday5' ? 5 : 1, get: apiGet,
-        })) : h('div', { role: 'status', style: S.muted }, '输入代码后点「查看」读取分时。')
-      : hist && hist.kline.length >= 1
+    loaded
       ? h('div', { style: S.group },
         h('div', { style: S.groupHead },
-          h('div', { style: { ...S.title, marginBottom: 0 } }, loaded ? `${loaded.code} · K线` : 'K线')),
+          h('div', { style: { ...S.title, marginBottom: 0 } }, `${loaded.code} · ${loaded.kind === 'fund' ? '净值走势' : '走势'}`)),
         h('div', { style: { padding: 9, display: 'flex', flexDirection: 'column', gap: 8 } },
-          h(KlineChart, { key: loaded ? `${loaded.kind}:${loaded.code}` : 'kline', bars: hist.kline, markers: hist.events, title: loaded ? `${loaded.code} K线` : 'K线' }),
-          h(KlineStats, { kline: hist.kline })))
+          h(MarketChart, {
+            key: `${loaded.kind}:${loaded.code}`,
+            code: loaded.code, kind: loaded.kind, name: loaded.code,
+            bars: hist?.kline ?? [], markers: hist?.events ?? [], get: apiGet,
+            loading: busy, error: histError, updatedAt: hist?.updatedAt,
+            onRetry: () => void load(loaded.code, loaded.kind),
+            onModeChange: (mode) => setView(mode === 'daily' ? 'kline' : mode === 'intraday5' ? 'intraday5' : 'intraday1'),
+          }),
+          view === 'kline' && hist && hist.kline.length >= 1 ? h(KlineStats, { kline: hist.kline }) : null))
       : h('div', { style: S.group },
         h('div', { style: S.groupHead }, h('div', { style: { ...S.title, marginBottom: 0 } }, 'K线与事件')),
         h('div', { style: { padding: 9 } },
           busy
             ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h(Skeleton, { w: '100%', h: 120 }), h(Skeleton, { w: '70%', h: 14 }))
-            : histError
-              ? h('div', { role: 'alert', style: { ...S.muted, fontSize: 12, color: DANGER, lineHeight: 1.7 } },
-                `本地历史读取失败：${histError}。这不等于“没有历史数据”，请核对代码与市场类型后重试。`,
-                h('div', { style: { marginTop: 6 } }, h('button', { style: S.btn, onClick: () => void load(code.trim(), kind) }, '重试')))
-              : h(EmptyState, { icon: h(IconChart, { size: 20 }), text: '输入代码后点「同步」拉取历史并本地保存；之后离线也能看走势与事件标记。' }))),
+            : h(EmptyState, { icon: h(IconChart, { size: 20 }), text: '输入代码后点「查看」读取走势；本地历史会一起同步。' }))),
     hist && hist.events.length ? h('div', { style: S.group },
       h('div', { style: S.groupHead },
         h('div', { style: { ...S.title, marginBottom: 0 } }, '事件标记'),
@@ -2445,11 +2453,10 @@ function PositionAnalysisView(props: { item: AnalysisItem; onClose: () => void }
             h('button', { style: S.btn, disabled: klineBusy, onClick: () => void syncKline() }, klineBusy ? '同步中…' : kline.bars.length ? '同步更新' : '同步K线（首次拉取）')),
           klineHint ? h('div', { style: { ...S.muted, fontSize: 11 } }, klineHint) : null,
           kline.bars.length
-            ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-              h(KlineChart, { bars: kline.bars, markers: kline.events, title: `${title} K线`, height: 260 }),
-              h(KlineStats, { kline: kline.bars }))
+            ? h(MarketChart, { code: item.code, kind: item.type === 'fund' ? 'fund' : inferKlineKind(item.code, item.type),
+              name: title, bars: kline.bars, markers: kline.events, get: apiGet, height: 260 })
             : h('div', { style: { ...S.muted, fontSize: 12, padding: '18px 6px' } },
-              '本地暂无K线数据。点上方「同步K线（首次拉取）」直接拉取历史；图表支持滚轮缩放、拖动平移、双击复位、键盘 ←→/±/Home/End/R 与色盲友好配色。')),
+              '本地暂无K线数据。点上方「同步K线（首次拉取）」直接拉取历史；也可以切到分时。')),
         status === 'loading' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
           h(Skeleton, { w: '45%', h: 14 }), h(Skeleton, { w: '90%', h: 10 }), h(Skeleton, { w: '75%', h: 10 })) : null,
         busy ? h('div', { style: { ...S.card, gap: 8, alignItems: 'flex-start' } },
@@ -2785,8 +2792,9 @@ function ResearchView() {
     setHint('')
     try {
       const r = await apiPost<{ ok: boolean; error?: string }>(path, body)
-      if (!r.ok) { setHint(r.error ?? '操作失败'); return }
-    } catch (err) { setHint(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
+      if (!r.ok) { setHint(r.error ?? '操作失败'); return false }
+      return true
+    } catch (err) { setHint(err instanceof Error ? err.message : String(err)); return false } finally { setBusy(false) }
   }
 
   /** 反向同步：把磁盘上的新增/编辑/删除合并回索引。 */
@@ -3074,9 +3082,11 @@ function ResearchView() {
                 style: { ...S.btn, padding: '2px 8px' },
                 disabled: busy,
                 onClick: async () => {
+                  if (!window.confirm(`永久删除「${it.title}」？正文和全部观点批注将一起删除，无法在面板恢复。${editing && editor !== editorBase ? '\n当前还有未保存的修改，也将丢弃。' : ''}\n如只是不再使用，请选择“归档”。`)) return
                   dismissedRef.current = it.id
-                  await act('/research/delete', { id: it.id })
-                  close()
+                  if (!await act('/research/delete', { id: it.id })) { dismissedRef.current = undefined; return }
+                  setDetail(undefined); setEditing(false); setRaw(false)
+                  setHint('资料及正文已永久删除')
                   await load()
                 },
               }, '删除'))),
@@ -3093,8 +3103,10 @@ function ResearchView() {
               h('button', {
                 style: S.btn,
                 onClick: () => {
-                  if (editing) { setEditing(false); setEditPreview(false) }
-                  else { setEditor(detail.body ?? ''); setEditorBase(detail.body ?? ''); setEditPreview(false); setEditing(true) }
+                  if (editing) {
+                    if (editor !== editorBase && !window.confirm('正文还有未保存的修改。确认放弃修改并取消编辑？')) return
+                    setEditing(false); setEditPreview(false)
+                  } else { setEditor(detail.body ?? ''); setEditorBase(detail.body ?? ''); setEditPreview(false); setEditing(true) }
                 },
               }, editing ? '取消编辑' : '编辑正文'),
               h('button', { style: S.btn, onClick: () => setRaw(!raw) }, raw ? '渲染视图' : '查看原文'),
@@ -3404,50 +3416,91 @@ function EvidenceInbox(props: { deliver: (text: string) => void }) {
   const [detail, setDetail] = useState<EvidenceDetail | null>(null)
   const [hint, setHint] = useState('')
   const [mode, setMode] = useState<'text' | 'url' | 'values'>('text')
-  const [form, setForm] = useState({
+  const emptyForm = {
     url: '', text: '', name: '', value: '', unit: '', period: '', source: '',
     documentDate: '', reportingPeriod: '', units: '', note: '',
-  })
+  }
+  const [form, setForm] = useState(emptyForm)
   const [busy, setBusy] = useState(false)
+  const selectedRef = useRef('')
+  const detailRequest = useRef(0)
+  const listRequest = useRef(0)
+  const posting = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; detailRequest.current++; listRequest.current++ }
+  }, [])
+  const selectRequest = (requestId: string) => {
+    selectedRef.current = requestId
+    detailRequest.current++ // invalidate old detail responses before the next render/effect
+    setSelected(requestId)
+    setDetail(null)
+    setForm({ ...emptyForm })
+    setMode('text')
+    setHint('')
+  }
 
   const load = useCallback(() => {
+    const sequence = ++listRequest.current
     const qs = new URLSearchParams()
     if (statusFilter) qs.set('status', statusFilter)
     qs.set('limit', '60')
     void apiGet<{ ok: boolean; stats?: { total?: number; waiting?: number; submissions?: number }; requests?: EvidenceRow[]; error?: string }>(`/evidence?${qs.toString()}`)
       .then((r) => {
+        if (!mounted.current || listRequest.current !== sequence) return
         if (r.ok) { setRows(r.requests ?? []); setStats(r.stats ?? {}) } else { setHint(r.error ?? '读取失败') }
       })
-      .catch((err) => setHint(errText(err)))
+      .catch((err) => { if (mounted.current && listRequest.current === sequence) setHint(errText(err)) })
   }, [statusFilter])
 
   useEffect(() => { load() }, [load])
   useBus((e) => { if (e.kind === 'evidence' || e.kind === '__resync') load() })
 
   const loadDetail = useCallback((requestId: string) => {
-    if (!requestId) { setDetail(null); return }
+    if (selectedRef.current !== requestId) return
+    const sequence = ++detailRequest.current
+    setDetail(null)
+    if (!requestId) return
     void apiGet<EvidenceDetail>(`/evidence?id=${encodeURIComponent(requestId)}`)
-      .then((r) => setDetail(r))
-      .catch((err) => setDetail({ ok: false, error: errText(err) }))
+      .then((r) => {
+        if (!mounted.current || detailRequest.current !== sequence || selectedRef.current !== requestId) return
+        if (r.ok && r.request?.requestId !== requestId) {
+          setDetail({ ok: false, error: '资料身份不一致，请重新读取当前证据请求。' })
+          return
+        }
+        setDetail(r)
+      })
+      .catch((err) => {
+        if (mounted.current && detailRequest.current === sequence && selectedRef.current === requestId) setDetail({ ok: false, error: errText(err) })
+      })
   }, [])
   useEffect(() => { loadDetail(selected) }, [selected, loadDetail])
 
   const post = (payload: Record<string, unknown>, path: string): void => {
+    const requestId = String(payload.requestId ?? '')
+    if (posting.current || !requestId || selectedRef.current !== requestId || active?.requestId !== requestId) return
+    posting.current = true
     setBusy(true)
     void apiPost<{ ok: boolean; error?: string; validation?: { ok: boolean; issues: string[]; note: string } }>(path, payload)
       .then((r) => {
-        setHint(r.ok ? '已完成' : (r.error ?? r.validation?.issues?.join('；') ?? '未通过'))
+        if (!mounted.current) return
         load()
-        if (selected) loadDetail(selected)
+        if (selectedRef.current !== requestId) return // receipt belongs to the submitted request, not a new selection
+        setHint(r.ok ? '已完成' : (r.error ?? r.validation?.issues?.join('；') ?? '未通过'))
+        loadDetail(requestId)
       })
-      .catch((err) => setHint(errText(err)))
-      .finally(() => setBusy(false))
+      .catch((err) => { if (mounted.current && selectedRef.current === requestId) setHint(errText(err)) })
+      .finally(() => { posting.current = false; if (mounted.current) setBusy(false) })
   }
 
   const submitMaterial = (): void => {
-    if (!selected) return
+    if (!active || active.requestId !== selected || selectedRef.current !== active.requestId) {
+      setHint('请等待当前证据请求读取完成，再提交对应材料。')
+      return
+    }
     const payload: Record<string, unknown> = {
-      requestId: selected,
+      requestId: active.requestId,
       documentDate: form.documentDate || undefined,
       reportingPeriod: form.reportingPeriod || undefined,
       units: form.units || undefined,
@@ -3469,8 +3522,8 @@ function EvidenceInbox(props: { deliver: (text: string) => void }) {
     ].join('\n'))
   }
 
-  const active = detail?.ok ? detail.request : undefined
-  const submissions = detail?.submissions ?? []
+  const active = detail?.ok && detail.request?.requestId === selected ? detail.request : undefined
+  const submissions = active ? detail?.submissions ?? [] : []
 
   return h('div', { style: S.section },
     h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
@@ -3490,13 +3543,18 @@ function EvidenceInbox(props: { deliver: (text: string) => void }) {
           h('div', { style: S.muted }, '当研究中缺关键资料（例如某政策实际拨付数据），Agent 会在这里创建待办；你也可以在对话里说「缺什么就建待办」。'))
       : null,
 
+    selected && !detail ? h('div', { role: 'status', style: S.muted }, '正在读取当前证据请求，确认身份后可提交材料…') : null,
+    selected && detail?.ok === false ? h('div', { role: 'alert', style: { ...S.muted, color: DANGER } },
+      `证据详情读取失败：${detail.error ?? '未取得有效资料'} `,
+      h('button', { style: S.btn, onClick: () => loadDetail(selected) }, '重试详情')) : null,
+
     ...rows.map((row) => {
       const color = EVIDENCE_STATUS_COLOR[row.status] ?? '#8a8f99'
       const isActive = selected === row.requestId
       return h('div', {
         key: row.requestId,
         style: { ...S.card, cursor: 'pointer', border: `1px solid ${isActive ? BRAND : R.line}` },
-        onClick: () => setSelected(isActive ? '' : row.requestId),
+        onClick: () => selectRequest(isActive ? '' : row.requestId),
       },
         h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8 } },
           h('div', { style: { fontWeight: 600, fontSize: 13 } }, row.title),
@@ -3543,7 +3601,7 @@ function EvidenceInbox(props: { deliver: (text: string) => void }) {
         h('input', { style: S.input, placeholder: '单位', value: form.units, onChange: (e: any) => setForm({ ...form, units: e.target.value }) })),
       h('div', { style: { display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' } },
         h('button', { style: S.btn, disabled: busy, onClick: submitMaterial }, busy ? '提交中…' : '提交'),
-        h('button', { style: S.btn, onClick: () => post({ requestId: active.requestId, action: 'skip', note: '暂时找不到' }, '/evidence/resolve') }, '暂时找不到'),
+        h('button', { style: S.btn, disabled: busy, onClick: () => post({ requestId: active.requestId, action: 'skip', note: '暂时找不到' }, '/evidence/resolve') }, '暂时找不到'),
         active.status === 'ACCEPTED' ? h('button', { style: { ...S.btn, borderColor: BRAND, color: BRAND }, onClick: () => askAgentToResume(active) }, '交给对话继续研究') : null),
 
       submissions.length > 0 ? h('div', { style: { marginTop: 12 } },
@@ -3971,7 +4029,7 @@ function PanelBody(props: {
   onOpenAnalysis: (item: AnalysisItem) => void
 }) {
   const { onClose, docked, onToggleDock } = props
-  const { data, loading, loadLive, mutate } = useLive()
+  const { data, loading, loadLive, loadState, mutate, error: liveError, liveAt } = useLive()
   const [tab, setTab] = useState<string>(() => {
     try {
       const saved = window.localStorage.getItem(TAB_KEY)
@@ -4162,7 +4220,7 @@ function PanelBody(props: {
         onClick: () => { setBellOpen(!bellOpen); void loadReminders() },
         title: unread ? `${unread} 条未读提醒` : '查看提醒（行情异动 / 观点复核）',
       }, h(IconBell, { size: 15, dot: unread > 0 })),
-      h('button', { className: 'fia-header-action', onClick: () => void loadLive(), disabled: loading, title: '刷新行情' }, loading ? '…' : '刷新'),
+      h('button', { className: 'fia-header-action', onClick: () => { void loadState(); void loadLive() }, disabled: loading, title: '刷新行情与持仓' }, loading ? '…' : '刷新'),
       h('button', { className: 'fia-header-action fia-expand-action', title: panelWidth > 900 ? '恢复紧凑侧栏' : '展开为宽屏工作台', onClick: () => setPanelWidth(panelWidth > 900 ? PANEL_W : Math.min(PANEL_W_MAX, window.innerWidth - 32)) }, panelWidth > 900 ? '收窄' : '展开'),
       h('button', { className: 'fia-header-action', title: docked ? '切换为浮动窗' : '停靠为侧栏页', onClick: onToggleDock }, docked ? '浮动' : '停靠'),
       h('button', { className: 'fia-header-action', onClick: onClose, title: '关闭投资助手', 'aria-label': '关闭投资助手' }, '×'))),
@@ -4239,6 +4297,15 @@ function PanelBody(props: {
       h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, agentSaved.text),
       agentSaved.tab ? h('button', { style: { ...S.btn, padding: '2px 8px' }, onClick: () => { selectTab(agentSaved.tab!); setAgentSaved(undefined) } }, '查看') : null,
       h('button', { style: { ...S.btn, padding: '2px 6px' }, onClick: () => setAgentSaved(undefined) }, '×')) : null,
+    liveError.state || liveError.live ? h('div', {
+      role: 'status',
+      style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12, flexWrap: 'wrap',
+        background: R.surface, color: DANGER, borderBottom: `1px solid ${V('--dsw-alias-border-l2', '#eee')}` },
+    },
+      h('span', { style: { flex: 1, minWidth: 0 } },
+        `${liveError.state ? '持仓读取失败' : '行情读取失败'}：${liveError.state || liveError.live}`,
+        liveAt ? ` · 仍显示 ${liveAt.slice(5, 16).replace('T', ' ')} 的报价` : ''),
+      h('button', { style: { ...S.btn, padding: '2px 8px' }, onClick: () => { void loadState(); void loadLive() } }, '重试')) : null,
     h(SessionPicker, null),
     h('div', { className: 'fia-panel-content' },
       tab === 'home' ? h(OverviewWorkbench, { navigate: selectTab, deliver: deliverToChat, get: apiGet, useBus,

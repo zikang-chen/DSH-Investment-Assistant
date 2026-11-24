@@ -42,14 +42,15 @@ npm run demo:seed      # data-demo/：示例账户、5 笔流水、2 条建议�
 
 ## 功能
 
-- A 股 / 港股 / 美股行情、日 K、分时（当日 / 近 5 日，与日线同一套画法）、财务、资金流、公告、股东、分红
-- 基金净值、经理、规模、重仓、同类排名，多基金阶段收益与相关性对比
+- A 股 / 港股 / 美股 / 全球指数：日 K、分时与 5 日分时（四个看盘入口同一套切换与画法）、财务、资金流、公告、股东、分红
+- 基金净值、经理、规模、重仓、同类排名，多基金阶段收益与相关性对比；场内 ETF 另有成交价走势
+- Agent 可直接取分钟数据：`get_intraday_data`（A/H/美/全球 secid，1 或 5 日，带来源与时区分页）
 - 政策原文采集与入库：段落级引用、版本对比、传导链、执行进度跟踪
 - 宏观数据：统计局、人民银行、财政部，以及 OECD / Eurostat / ECB 等海外序列
 - 投资判断：条件性结论、支持证据、反对证据、失效条件、下次复核日
-- 个人资本：交易流水账本、FIFO 已实现、未实现、TWR、XIRR、多币种净资产
+- 个人资本：账户、交易流水、FIFO 已实现、未实现、TWR、XIRR、多币种净资产；流水可在页面直接查询
 - 复利规划：定投终值、不规则现金流、目标反解、通胀后购买力
-- 组合策略：权重与集中度、漂移与换手、多资产纸面再平衡、版本与审批
+- 组合策略：当前组合 → 目标与预算 → 漂移与换手 → 保存与审批；多资产纸面再平衡与版本管理
 - 证据协作：缺资料时生成待补任务，提交后校验，再接着原来的研究
 - 金融术语三级解释，可收藏复习
 
@@ -117,9 +118,11 @@ npm run test:capital         # 21
 npm run test:wealth          # 19
 npm run test:learn           # 14
 npm run test:evidence        # 13
-npm run test:intraday        # 分时 4 套 + 全球指数兜底
-npm run test:market-integrity # 行情身份/时效/超时与取消
+npm run test:intraday        # 分时 5 套（解析/完整性/图形模型/Agent 工具/备用源）
+npm run test:market-integrity # 行情身份、时效、超时与取消、图表边界
 npm run test:portfolio       # 组合策略 6 套
+npm run test:review-safety   # 研究正文与证据请求的竞态/丢稿
+npm run test:product-copy    # 可见文案只查界面文本
 npm run test:regressions     # 19 组
 npm run test:quant           # 28
 ```
@@ -135,7 +138,8 @@ Windows 上 `test:offline` 与 `test:personal` 依赖 POSIX 脚本语义，会�
 | 安装、研究工作流、排障 | [完整使用与维护手册](<docs/complete-guide.md>) |
 | 组合策略设计 | [产品方案](<docs/portfolio-strategy-design.md>) |
 | 组合回测、核验、审批 | [工作流说明](<docs/portfolio-workflows.md>) |
-| K 线、分时与事件口径 | [K 线与事件](<docs/history-kline.md>) |
+| K 线、分时与事件口径 | [K 线与事件](<docs/history-kline.md>) · [Agent 分时取数](<docs/agent-intraday.md>) |
+| 本轮产品复审与改动 | [产品复审 2026-11](<docs/product-review-2026-11.md>) |
 | 政策与白皮书采集 | [政策采集](<docs/policy-collection.md>) |
 | 数据源与实测状态 | [数据源审计](<docs/data-source-audit.md>) · [中国免费数据集](<docs/free-cn-datasets.md>) |
 | 页面组织与跳转 | [页面跳转](<docs/product-navigation.md>) |

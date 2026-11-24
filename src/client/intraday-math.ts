@@ -2,7 +2,7 @@
  * Inspired by TradingView's whitespace data / magnet crosshair semantics (no dependency).
  * US timestamps are source-side +08:00, NOT converted using the browser timezone.
  */
-export type IntradayKind = 'a' | 'hk' | 'us'
+export type IntradayKind = 'a' | 'hk' | 'us' | 'global'
 export interface IntradayLikePoint {
   time: string
   price: number | null
@@ -59,11 +59,17 @@ function parseTime(time: string): { date: string | null; minute: number } | null
   }
   return { date: m[1] ?? null, minute: hour * 60 + minute }
 }
-function sessions(kind: IntradayKind, firstMinute?: number): [number, number][] {
+function sessions(kind: IntradayKind, date: string | null, minutes: number[]): [number, number][] {
   if (kind === 'a') return [[570, 690], [780, 900]]
   if (kind === 'hk') return [[570, 720], [780, 960]]
-  // Detect the template from the first source point, not the viewer's local DST.
-  const winter = firstMinute !== undefined && (firstMinute >= 1350 || (firstMinute > 240 && firstMinute < 720))
+  if (kind === 'global') {
+    // 未核准品种的交易时段/时区时只呈现源覆盖，不补造全天或前一日。
+    return [[Math.min(...(minutes.length ? minutes : [0])), Math.max(...(minutes.length ? minutes : [0]))]]
+  }
+  // 美股按交易日的纽约时区规则判夏冬，不能因只取到00:00片段就猜成夏令时。
+  const offset = date ? new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'shortOffset' })
+    .formatToParts(new Date(`${date}T18:00:00Z`)).find(p => p.type === 'timeZoneName')?.value : undefined
+  const winter = offset ? /GMT-5$/.test(offset) : minutes.some(m => m >= 1350 || m > 240 && m < 720)
   const open = winter ? 1350 : 1290
   return [[open, open + 390]]
 }
@@ -100,7 +106,7 @@ export function buildIntradayModel(points: IntradayLikePoint[], preClose: number
   for (let day = 0; day < count; day++) {
     const date = selectedDates[day] ?? null
     const rows = day < selectedDates.length ? parsed.filter((p) => p.date === date) : []
-    const ranges = sessions(kind, rows[0]?.minute)
+    const ranges = sessions(kind, date, rows.map(p => p.minute))
     const start = slots.length
     const breaks: number[] = []
     for (let session = 0; session < ranges.length; session++) {

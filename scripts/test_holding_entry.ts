@@ -45,7 +45,7 @@ check('typing code or Chinese name fragments cannot submit without a real candid
   for (const query of ['中国', '000001', 'AAPL', '基金候选']) {
     const result = validateHoldingDraft({ ...emptyHoldingDraft(), query, quantity: '1', avgCost: '0' })
     assert.equal(result.ok, false, query)
-    assert.match(result.errors.security!, /真实搜索候选/)
+    assert.match(result.errors.security!, /从搜索结果中选择证券/)
     assert.equal('payload' in result, false)
   }
 })
@@ -116,7 +116,7 @@ check('invalid names/codes/types and empty/nonfinite/negative numeric fields nev
     for (const raw of ['', ' ', 'NaN', 'Infinity', '-0.1']) {
       const result = validateHoldingDraft({ ...draftFor(stock), [field]: raw })
       assert.equal(result.ok, false, `${field}=${raw}`)
-      assert.match(result.errors[field]!, /有限的非负数/)
+      assert.match(result.errors[field]!, /请填写有效.*可为 0/)
       assert.equal('payload' in result, false)
     }
   }
@@ -125,13 +125,14 @@ check('invalid names/codes/types and empty/nonfinite/negative numeric fields nev
 check('preview receipt requires manual confirmation and never says it wrote holdings', () => {
   const pending = holdingPreviewFeedback({ ok: true, confirmationRequired: true })
   assert.equal(pending.kind, 'confirmation')
-  assert.match(pending.message, /尚未写入/)
-  assert.match(pending.message, /个人首页.*人工确认/)
+  assert.match(pending.message, /个人首页.*确认变更/)
+  assert.doesNotMatch(pending.message, /已保存|已写入/)
   for (const reply of [{ ok: true }, { ok: true, confirmationRequired: false }, { ok: false, error: '源异常' }]) {
     const feedback = holdingPreviewFeedback(reply)
     assert.equal(feedback.kind, 'error')
-    assert.match(feedback.message, /不能视为已保存|未写入/)
+    assert.match(feedback.message, /预览状态未确认|预览失败/)
     assert.match(feedback.message, /个人首页/)
+    assert.doesNotMatch(feedback.message, /已保存|已写入/)
   }
   assert.match(holdingPreviewFeedback({ ok: false, error: '源异常' }).message, /源异常/)
   assert.match(holdingPreviewFeedback({ ok: false }).message, /输入已保留/)
@@ -166,8 +167,8 @@ check('awaited preview handles failure, retains draft, blocks duplicates and gua
   assert.match(text, /if \(mounted\.current\) setFeedback/)
   assert.doesNotMatch(text, /setDraft\(|emptyHoldingDraft\(|setAttempted\(false\)/)
   assert.match(view!, /disabled=\{submitting\}/)
-  assert.match(view!, /正在等待预览回执，尚未写入持仓/)
-  assert.match(view!, /待人工确认 · 未写入/)
+  assert.match(view!, /正在生成持仓预览…/)
+  assert.match(view!, /feedback\.kind === 'confirmation' \? '待确认' : '预览失败'/)
 })
 
 check('named labels and decimal controls preserve units, accessible errors and compact layout', () => {
@@ -189,8 +190,8 @@ check('named labels and decimal controls preserve units, accessible errors and c
   }
   visit(ast)
   assert.equal(numberInputs, 2)
-  assert.match(view!, /由候选的市场 \/ 类型识别/)
-  assert.match(view!, /不自动换算汇率/)
+  assert.match(view!, /选择证券后自动填写/)
+  assert.match(view!, /按证券报价币种填写每股 \/ 每份成本/)
   assert.match(view!, /container-type:inline-size/)
   assert.match(view!, /grid-template-columns:minmax\(0,1fr\)/)
   assert.match(view!, /@container \(min-width:520px\)/)

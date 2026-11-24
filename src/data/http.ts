@@ -103,7 +103,7 @@ export async function httpGetText(
 }
 
 export function marketCode(symbol: string): 0 | 1 {
-  return symbol.startsWith('6') ? 1 : 0
+  return /^[569]/.test(symbol) ? 1 : 0
 }
 
 /**

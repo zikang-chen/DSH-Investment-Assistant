@@ -160,7 +160,7 @@ export function FundWorkspace({ get, onOpenFund, active }: FundWorkspaceProps) {
           onOpenFund(item)
         }}
       />
-      <p className="fia-fund-search__hint">{FUND_SEARCH_ONLY_NOTE} 选中后直接打开该基金资料；本页不添加自选或修改持仓。</p>
+      <p className="fia-fund-search__hint">{FUND_SEARCH_ONLY_NOTE} 点击名称查看基金资料。</p>
       {searchReject && <p className="fia-fund-search__reject" role="status">{searchReject}</p>}
     </section>
     <section className="fia-fund-section" aria-label="开放式基金排行">
@@ -190,7 +190,7 @@ export function FundWorkspace({ get, onOpenFund, active }: FundWorkspaceProps) {
             onClick={() => selectSort(option.value)}
           >{option.label}</Button>)}
         </div>
-        <p className="fia-fund-note">{FUND_NAV_T1_NOTE} 当前按「{periodLabel}」列出阶段收益；分页只按本页返回行数是否等于 {FUND_RANK_PAGE_SIZE} 条推断，不显示总数或总页数。</p>
+        <p className="fia-fund-note">{FUND_NAV_T1_NOTE} 当前按「{periodLabel}」收益排序，每页最多 {FUND_RANK_PAGE_SIZE} 只。</p>
         {loading
           ? <div role="status" aria-live="polite">
             <p className="fia-fund-message">正在读取基金排行（{periodLabel} · 第 {page} 页）…</p>
@@ -200,19 +200,19 @@ export function FundWorkspace({ get, onOpenFund, active }: FundWorkspaceProps) {
           </div>
           : error
             ? <div className="fia-fund-message fia-fund-message--error fia-fund-message--actions" role="alert">
-              <span>基金排行读取失败：{error}。未显示估算值或 0 收益。</span>
+              <span>基金排行读取失败：{error}</span>
               <Button onClick={reload}>重试</Button>
             </div>
             : rows.length === 0
               ? page > 1
                 ? <EmptyState
                   title={`第 ${page} 页没有数据`}
-                  description="可能已超过最后一页。上一页/下一页只按返回行数推断，接口没有返回总数。"
+                  description="可能已到最后一页，可返回上一页。"
                   action={<Button onClick={() => setPage(1)}>回到第一页</Button>}
                 />
                 : <EmptyState
                   title="暂无基金排行数据"
-                  description="数据源没有返回任何行。可以刷新重试或调整类型/周期；这里不会用 0 填充。"
+                  description="暂无数据，请刷新或调整类型与周期。"
                   action={<Button onClick={reload}>重试</Button>}
                 />
               : <>
@@ -260,7 +260,7 @@ export function FundWorkspace({ get, onOpenFund, active }: FundWorkspaceProps) {
                   <span className="fia-fund-pager__status" aria-live="polite">{pageState.status}</span>
                   <Button onClick={() => setPage(current => current + 1)} disabled={loading || !pageState.hasNext}>下一页</Button>
                 </div>
-                <p className="fia-fund-note">数据源：东财基金排行（对照 AkShare fund_open_fund_rank_em）。净值日期为 T+1 数据。</p>
+                <p className="fia-fund-note">数据源：东财基金排行 · 净值 T+1 披露。</p>
               </>
         }
       </div>

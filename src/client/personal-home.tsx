@@ -278,7 +278,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
           <div className="fh-card" key={label}><div className="fh-stat">{value}</div><div className="fh-muted">{label}</div></div>)}
       </div>}
       {!planningOnly && <><Section title="接下来做什么" meta="按重要性排序">
-        <p className="fh-muted fh-section-copy">{!data.profile ? '先填写目标、期限与风险承受能力，让后续判断有参照。' : data.pending.length ? `${data.pending.length} 项变更等待你检查前后差异。Agent 不会替你确认。` : !data.theses.length ? '记录投资理由，写清验证指标与证伪条件。' : outstanding ? `有 ${outstanding} 张卡片待生成或待人工复核。` : '没有待处理卡片。可以生成本周复盘，或下周再对照新证据。'}</p>
+        <p className="fh-muted fh-section-copy">{!data.profile ? '先填写目标、期限与风险承受能力，让后续判断有参照。' : data.pending.length ? `${data.pending.length} 项变更待确认，请核对前后差异。` : !data.theses.length ? '记录投资理由，写清验证指标与证伪条件。' : outstanding ? `有 ${outstanding} 张卡片待生成或待人工复核。` : '没有待处理卡片。可以生成本周复盘，或下周再对照新证据。'}</p>
         <div className="fh-row">
           <button className="fh-btn fh-primary" onClick={() => setView(!data.profile ? 'journal' : data.pending.length ? 'approvals' : !data.theses.length ? 'journal' : 'reviews')}>
             {!data.profile ? '开始建档 →' : data.pending.length ? '查看待确认 →' : !data.theses.length ? '记录判断 →' : '查看复盘 →'}</button>
@@ -286,7 +286,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
         </div>
       </Section>
       {!!data.jobs?.length && <Section title="周任务" meta={`${data.jobs.filter(j => j.state === 'failed').length} 个失败`}>
-        <p className="fh-muted">证据采集自动执行（每卡每周幂等）；Agent 解读需你在会话中触发。失败任务可重试；历史缺口不补造伪证据。</p>
+        <p className="fh-muted">每周自动采集证据；解读请在对话中发起。失败任务可重试。</p>
         {data.jobs.slice(-8).map(j => <div key={j.key} className="fh-inset fh-row">
           <Badge tone={j.state === 'ready' ? 'good' : j.state === 'failed' ? 'warn' : ''}>{j.state === 'ready' ? '完成' : j.state === 'failed' ? '失败' : j.state === 'running' ? '执行中' : j.state === 'cancelled' ? '已取消' : '待处理'}</Badge>
           <span className="fh-muted" style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{j.week} · {j.cardType === 'evidence' ? '证据采集' : 'Agent 解读'}{j.requiresUser ? '（需你触发）' : ''}{j.error ? ` · ${j.error}` : ''}</span>
@@ -321,8 +321,8 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
           discipline: { label: '纪律', color: secondary },
           review: { label: '复盘', color: success },
         }
-        return <Section title="财务规划与学习" anchor="growth" meta="本机记录 · 不评价投资能力">
-          <p className="fh-muted">规划用于梳理应急金、目标与保障；缺少资料不等于能力为零。学习与复盘不按收益排名。</p>
+        return <Section title="财务规划与学习" anchor="growth" meta="本机记录">
+          <p className="fh-muted">梳理应急金、目标与保障，查看学习和复盘记录。</p>
           <details><summary>查看学习进度与规划建议</summary>
           <div className="fh-growth-overview">
 
@@ -373,7 +373,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
               setNotice(deliveryNote(await deliver('做一次成长复盘：装载成长状态，按四柱（学习/计划/纪律/资产）给出下一步建议')))
             })}>在对话中复盘</button>
           </div>
-          <p className="fh-muted" style={{ marginTop: 8 }}>建议依据来自本地档案与复盘记录，不代表投资能力评级。家庭财务数据仅保存在本机。</p>
+          <p className="fh-muted" style={{ marginTop: 8 }}>建议基于本地档案与复盘记录。家庭财务数据保存在本机。</p>
           </details>
         </Section>
       })()}
@@ -387,7 +387,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
         {data.profile && !editProfile ? <>
           <p className="fh-copy" style={{ fontWeight: 600 }}>{data.profile.goal}</p>
           <div className="fh-row"><Badge tone="good">{data.profile.horizonMonths} 个月</Badge><Badge>风险 {({ low: '低', medium: '中', high: '高' } as const)[data.profile.risk]}</Badge><Badge>最大回撤 {data.profile.maxDrawdownPct}%</Badge><Badge>偏好 {data.profile.baseCurrency}</Badge></div>
-          <p className="fh-muted fh-copy">风险能力为自评，不是适当性认证；基准币种不触发隐式折算。</p>
+          <p className="fh-muted fh-copy">风险承受能力为自评；金额按原币展示。</p>
           <button className="fh-btn" onClick={() => { setProfile(data.profile!); setEditProfile(true) }}>修改档案</button>
         </> : <form onSubmit={e => { e.preventDefault(); void run(async () => { await api('/profile', profile); setEditProfile(false); setNotice('投资档案已保存') }) }}>
           <label>投资目标<textarea required className="fh-input" rows={2} maxLength={10000} value={profile.goal} placeholder="例如：为五年后的住房首付积累资金" onChange={e => setProfile({ ...profile, goal: e.target.value })} /></label>
@@ -401,7 +401,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
       {data.profile && <Section title="02 / 投资判断" meta={`${data.theses.length} 条记录`}>
         <p className="fh-muted">修改先预览后确认。证伪条件写成可观察的事实，而不是涨跌猜测。</p>
         {data.theses.map(t => <article className="fh-inset" key={t.id}><div className="fh-head"><strong>{t.code}</strong><Badge>版本 {t.revision}</Badge></div><p>{t.rationale}</p><p className="fh-muted fh-copy">验证 · {t.indicator}<br />证伪 · {t.falsifier}</p><button className="fh-btn" onClick={() => { setThesis({ ...t, type: t.type ?? 'stock', changeReason: t.changeReason ?? '' }); document.getElementById('finance-thesis-form')?.scrollIntoView({ block: 'nearest' }) }}>提出修正</button></article>)}
-        <form id="finance-thesis-form" className="fh-form" onSubmit={e => { e.preventDefault(); void run(async () => { await api('/thesis', { ...thesis, id: thesis.id || undefined, changeReason: thesis.id ? thesis.changeReason : undefined }); setView('approvals'); setThesis(blank); setNotice('观点未修改，请查看差异后确认。') }) }}>
+        <form id="finance-thesis-form" className="fh-form" onSubmit={e => { e.preventDefault(); void run(async () => { await api('/thesis', { ...thesis, id: thesis.id || undefined, changeReason: thesis.id ? thesis.changeReason : undefined }); setView('approvals'); setThesis(blank); setNotice('变更待确认，请核对前后差异。') }) }}>
           <strong>{thesis.id ? '修正原判断' : '新建一条判断'}</strong>
           <label>标的类型<select className="fh-input" value={thesis.type} onChange={e => setThesis({ ...thesis, type: e.target.value })}><option value="stock">股票 / 场内ETF</option><option value="fund">场外基金</option></select></label>
           {([['code', '标的代码'], ['rationale', '投资理由 · 为什么持有？'], ['indicator', '验证指标 · 数值/阈值与观察日期'], ['falsifier', '证伪条件 · 什么事实会改变判断？']] as const).map(([key, label]) => <label key={key}>{label}<textarea required className="fh-input" rows={key === 'code' ? 1 : 2} maxLength={key === 'code' ? 32 : 10000} value={thesis[key]} onChange={e => setThesis({ ...thesis, [key]: e.target.value })} /></label>)}
@@ -414,7 +414,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
       <p className="fh-muted">请打开并检查前后差异后确认。预览15分钟后过期；数据发生变化时须重新预览。</p>
       {!data.pending.length && <p className="fh-muted fh-copy">目前没有待确认变更。</p>}
       {data.pending.map(p => <article key={p.id} className="fh-inset">
-        <div className="fh-head"><strong>{p.label}</strong><Badge tone="warn">待你决定</Badge></div><p className="fh-muted">有效期至 {new Date(p.expiresAt).toLocaleString()}</p>
+        <div className="fh-head"><strong>{p.label}</strong><Badge tone="warn">待确认</Badge></div><p className="fh-muted">有效期至 {new Date(p.expiresAt).toLocaleString()}</p>
         <details onToggle={e => { if (e.currentTarget.open) setSeen(prev => new Set([...prev, p.id])) }}>
           <summary>查看修改前 / 修改后</summary>
           <div className="fh-diff">{([['修改前', p.before], ['建议修改', p.after]] as const).map(([label, value]) => <div key={label}><strong className="fh-muted">{label}</strong><pre>{JSON.stringify(value, null, 2) ?? '无'}</pre></div>)}</div>
@@ -424,7 +424,7 @@ export function PersonalHome({ deliver, navigate, useBus, openReminders, embedde
     </Section>}
     {data && view === 'reviews' && <>
       <Section title="每周复盘" meta={`以${data.weekTimeZone ?? 'UTC'}周一为周起点`} anchor="reviews">
-        <p className="fh-muted fh-section-copy">每条观点每周一张证据快照。主动生成，不自动代你修正观点。同周修正观点后可对新版本「补卡」，原卡不覆盖。</p>
+        <p className="fh-muted fh-section-copy">每条观点每周生成一张复盘卡；本周修正观点后，可按新版本补充。</p>
         {data.profile ? action('让 Agent 生成本周复盘', generate, true, !data.theses.length) : <button className="fh-btn fh-primary" onClick={goJournal}>先完成建档</button>}
         {!data.cards.length && <p className="fh-muted fh-copy">暂无复盘卡。建档、记录观点后，可从这里开始。</p>}
       </Section>
@@ -461,7 +461,7 @@ function Review({ card: c, busy, decide, makeup, currentRevision, showMakeup }: 
     </div>}
     <div className="fh-quote"><p>{c.thesis.rationale}</p><p className="fh-muted fh-copy">验证 · {c.thesis.indicator}<br />证伪 · {c.thesis.falsifier}</p></div>
     {c.previous && <p className="fh-muted fh-copy">上次（{c.previous.week}）· {c.previous.reportAt ? `报告 ${c.previous.reportAt.slice(0, 10)}` : '未写回报告'}{c.previous.decision ? ` · 我的决定：${decisions[c.previous.decision.action]}` : ' · 尚未复核'}</p>}
-    {!!c.checks?.length && <div className="fh-inset"><strong>指标对照（确定性计算 · 非投资结论）</strong>
+    {!!c.checks?.length && <div className="fh-inset"><strong>指标对照</strong>
       {c.checks.map(k => <div key={`${k.kind}-${k.id}`} className="fh-muted">[{k.kind === 'indicator' ? '验证' : '证伪'}] {k.label} → {checkLabel(k.status)}{k.value !== undefined ? `：${k.value}${k.unit ?? ''}${k.asOf ? `（数据时点 ${k.asOf}）` : ''}` : ''}</div>)}
     </div>}
     {!!c.missing.length && <p className="fh-muted" style={{ color: warning }}>缺失 / 待核实：{c.missing.join('；')}</p>}
@@ -470,7 +470,7 @@ function Review({ card: c, busy, decide, makeup, currentRevision, showMakeup }: 
       {c.evidence.map((e, i) => <div key={i} className="fh-inset"><strong>[{i}] {e.source}</strong><div className="fh-muted">数据时间 {e.occurredAt ?? '缺失'}<br />获取时间 {e.retrievedAt}</div>
         {e.sourceUrl && /^https?:\/\//i.test(e.sourceUrl) && <a href={e.sourceUrl} target="_blank" rel="noreferrer noopener" style={{ color: teal }}>查看原始来源 ↗</a>}<pre>{e.text}</pre></div>)}
     </details>
-    {c.agent ? <div className="fh-report"><strong>Agent 的证据复盘</strong><ReactMarkdown remarkPlugins={[remarkGfm]}>{c.agent.report}</ReactMarkdown><small className="fh-muted">生成 {c.agent.at} · 引用证据 {c.agent.evidenceIndexes.join(', ')}</small></div> : <p className="fh-muted">尚未写回分析；证据快照不等于分析结论。</p>}
+    {c.agent ? <div className="fh-report"><strong>Agent 的证据复盘</strong><ReactMarkdown remarkPlugins={[remarkGfm]}>{c.agent.report}</ReactMarkdown><small className="fh-muted">生成 {c.agent.at} · 引用证据 {c.agent.evidenceIndexes.join(', ')}</small></div> : <p className="fh-muted">分析待生成，可在对话中继续。</p>}
     {c.decision ? <p className="fh-muted fh-copy">我的决定 · {decisions[c.decision.action]} · {c.decision.reason}（{c.decision.at}）</p> : c.agent && <div style={{ marginTop: 12 }}>
       <label>我的复核理由<textarea className="fh-input" rows={2} maxLength={10000} value={reason} onChange={e => setReason(e.target.value)} /></label>
       <div className="fh-row">{Object.entries(decisions).map(([decision, label]) => <button key={decision} className="fh-btn" disabled={busy || !reason.trim()} onClick={() => void decide(decision, reason)}>{label}</button>)}</div>

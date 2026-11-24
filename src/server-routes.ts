@@ -56,6 +56,7 @@ import { RECOMMENDATION_LABEL } from './invest/schema.js'
 import type { CapitalStore } from './capital/ledger.js'
 import { deriveState } from './capital/performance.js'
 import { fromCents } from './capital/types.js'
+import { capitalTransactionsRead } from './server-capital-read.js'
 import type { WealthPlanStore } from './wealth/plans.js'
 import { compound, toCentsSafe, yuan } from './wealth/compound.js'
 import type { LearningStore } from './learn/explain.js'
@@ -539,6 +540,12 @@ export function registerRoutes(
             return sendJson(res, 200, { ok: false, error: err instanceof Error ? err.message : String(err) })
           }
         }
+        if (capital?.current && req.method === 'GET' && sub === '/capital/transactions') {
+          try {
+            if (!capital.current.isLoaded()) await capital.current.load()
+            return sendJson(res, 200, capitalTransactionsRead(capital.current, url.searchParams))
+          } catch (error) { return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) }) }
+        }
         if (capital?.current && req.method === 'GET' && sub === '/capital') {
           // 资本页只读快照：账本是流水，未提供行情/汇率时不假装有未实现收益与总资产。
           try {
@@ -987,18 +994,20 @@ export function registerRoutes(
           }
         }
         if (req.method === 'GET' && sub === '/intraday') {
-          // 分时：当日 / 近 5 日分钟级价格。kind 决定东财 secid 前缀（a/hk/us）。
-          const code = validateCode(url.searchParams.get('code') ?? '')
-          const kindParam = (url.searchParams.get('kind') ?? 'a').toLowerCase()
-          if (!['a', 'hk', 'us'].includes(kindParam)) {
-            return sendJson(res, 400, { ok: false, code, error: 'kind 必须是 a / hk / us' })
+          // secid 是显式市场身份，不能把指数/海外同代码转换为国内股票。
+          const secid = url.searchParams.get('secid')?.trim()
+          if (secid && !/^\d{1,3}\.[A-Za-z0-9._-]{1,24}$/.test(secid)) return sendJson(res, 400, { ok: false, error: '无效的 secid' })
+          const code = validateCode(url.searchParams.get('code') || secid?.slice(secid.indexOf('.') + 1) || '')
+          const kindParam = (url.searchParams.get('kind') ?? (secid ? 'global' : 'a')).toLowerCase()
+          if (!['a', 'hk', 'us', 'global'].includes(kindParam)) {
+            return sendJson(res, 400, { ok: false, code, error: 'kind 必须是 a / hk / us / global' })
           }
           const days = Number(url.searchParams.get('days') ?? '1')
-          if (!Number.isFinite(days) || days < 1 || days > 5) {
+          if (!Number.isInteger(days) || days < 1 || days > 5) {
             return sendJson(res, 400, { ok: false, code, error: 'days 只支持 1–5' })
           }
           try {
-            const result = await finance.getIntraday(code, kindParam as 'a' | 'hk' | 'us', Math.floor(days))
+            const result = await finance.getIntraday(code, kindParam as 'a' | 'hk' | 'us' | 'global', days, undefined, secid)
             if (!result.ok || !result.data) {
               // 分时失败要说清是哪个源失败、失败原因，不能返回空点集当成功。
               const reason = result.error ?? '分时不可用'

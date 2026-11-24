@@ -84,7 +84,8 @@ export function parseGlobalQuote(secid: string, payload: unknown): GlobalQuoteRe
   const data = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).data : undefined
   if (!data || typeof data !== 'object') return { ok: false, secid, error: '行情源返回空数据（可能是暂停交易或代码不存在）' }
   const d = data as Record<string, unknown>
-  const [market, requestedCode] = secid.split('.')
+  // The first dot separates the market; later dots belong to the ticker (e.g. BRK.B).
+  const [, market, requestedCode] = SECID_RE.exec(secid.trim())!
   if ((str(d.f57) && String(d.f57).toUpperCase() !== requestedCode!.toUpperCase()) ||
       (d.f107 !== undefined && String(d.f107) !== market)) return { ok: false, secid, error: '行情响应品种与请求不一致' }
   const price = num(d.f43)
@@ -200,7 +201,8 @@ export function parseGlobalKline(secid: string, payload: unknown): GlobalKlineRe
   const data = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).data : undefined
   if (!data || typeof data !== 'object') return { ok: false, secid, bars: [], error: 'K线源返回空数据（可能无该市场历史）', source }
   const d = data as Record<string, unknown>
-  const [market, requestedCode] = secid.split('.')
+  // The first dot separates the market; later dots belong to the ticker (e.g. BRK.B).
+  const [, market, requestedCode] = SECID_RE.exec(secid.trim())!
   if ((str(d.code) && String(d.code).toUpperCase() !== requestedCode!.toUpperCase()) ||
       (d.market !== undefined && String(d.market) !== market)) return { ok: false, secid, bars: [], error: 'K线响应品种与请求不一致', source }
   const rawLines = Array.isArray(d.klines) ? d.klines : []

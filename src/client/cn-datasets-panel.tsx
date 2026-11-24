@@ -103,11 +103,11 @@ export function CnDatasetsPanel({ get, active }: CnDatasetsPanelProps) {
       <div className="fia-cn-datasets__outcome" data-tone={view.tone} role={outcome.ok ? 'status' : 'alert'}>
         <div className="fia-cn-datasets__outcome-row">
           <span className="fia-cn-datasets__outcome-label">{view.label}</span>
-          <span>ok：{String(outcome.ok)}</span>
+          <span>取数成功：{outcome.ok ? '是' : '否'}</span>
         </div>
         <div className="fia-cn-datasets__outcome-row">
-          <span>asOf：{formatAsOf(outcome.asOf)}</span>
-          <span>rowCount：{outcome.rowCount == null ? '—' : String(outcome.rowCount)}</span>
+          <span>数据时点：{formatAsOf(outcome.asOf)}</span>
+          <span>数据行数：{outcome.rowCount == null ? '—' : String(outcome.rowCount)}</span>
           <span>耗时：{formatDuration(outcome.elapsedMs)}</span>
         </div>
         {preview.length
@@ -165,7 +165,7 @@ export function CnDatasetsPanel({ get, active }: CnDatasetsPanelProps) {
       <PageHeader
         title="中国免费数据集"
         eyebrow="CN DATASETS"
-        description="AKShare 数据桥的数据集目录。状态用文字+颜色同时标注；「测试」发起一次真实取数，失败会显示真实错误，不伪造成功。"
+        description="浏览 AKShare 数据集与连接状态，点击「测试」获取一条数据。"
         actions={<Button disabled={loading} onClick={() => void load()}>{loading ? '刷新中…' : '刷新目录'}</Button>}
       />
 
@@ -193,7 +193,7 @@ export function CnDatasetsPanel({ get, active }: CnDatasetsPanelProps) {
         : null}
 
       {!error && datasets !== null && datasets.length === 0
-        ? <EmptyState title="暂无数据集" description="后端未返回任何数据集；刷新可重试，不会自动去抓取或填充演示数据。" />
+        ? <EmptyState title="暂无数据集" description="未取得数据集目录，请刷新重试。" />
         : null}
 
       {groups.map(group => (

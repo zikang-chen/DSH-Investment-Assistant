@@ -76,14 +76,14 @@ export function SecuritySearch({ get, onSelect, onQueryChange, label = '查找�
       <Button onClick={run} disabled={!query.trim()}>{busy ? '检索中…' : '查找'}</Button></div>
     {open && <div className="fia-security-candidates">
       {busy && <p role="status">正在查询公开证券目录…</p>}
-      {error && <p role="alert" className="fia-error-text">{error}。可稍后重新查找，不会用演示候选替代。</p>}
+      {error && <p role="alert" className="fia-error-text">{error}。请稍后重试。</p>}
       {!busy && !error && searched && !rows.length && <p role="status">未匹配到候选。可试完整名称、代码或缩小关键词范围。</p>}
       {!busy && !error && rows.length > 0 && <><div id={listId} role="listbox" aria-label="证券匹配候选">{rows.map((row, index) => {
         const identity = identityFromMatch(row)
         return <button type="button" role="option" tabIndex={-1} id={`${uid}-option-${index}`} aria-selected={active === index} aria-disabled={!identity} key={`${row.market}-${row.type}-${row.code}`} onMouseEnter={() => setActive(index)} onClick={() => choose(row)}>
           <span><strong>{row.name}</strong><code>{row.code}</code></span><span><StatusBadge tone="neutral">{row.market || '市场未注明'}</StatusBadge><small>{identity ? identity.type === 'fund' ? '基金资料 →' : '股票资料 →' : '该类型暂不支持详情'}</small></span>
         </button>
-      })}</div><p className="fia-security-search-note">候选由公开数据源返回，非全市场完整列表。请核对代码、市场和基金份额类别后选择；过宽关键词可继续输入完整名称。</p></>}
+      })}</div><p className="fia-security-search-note">请核对代码、市场和基金份额类别；未找到时可输入完整名称。</p></>}
       {!busy && !error && !searched && <p className="fia-security-search-note">继续输入名称或代码，选择候选后再查看、分析或添加。</p>}
     </div>}
   </div>
