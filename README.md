@@ -113,24 +113,19 @@ Agent 核对行情时效，查政策、宏观和估值，补足反面证据后�
 ```bash
 npm run build
 
-npm run test:policy          # 46
-npm run test:investment      # 23
-npm run test:capital         # 21
-npm run test:wealth          # 19
-npm run test:learn           # 14
-npm run test:evidence        # 13
-npm run test:intraday        # 分时 5 套（解析/完整性/图形模型/Agent 工具/备用源）
+npm run test:intraday        # 分时：解析/完整性/图形/Agent 工具/备用源
 npm run test:market-integrity # 行情身份、时效、超时与取消、图表边界
-npm run test:portfolio       # 组合策略 6 套
-npm run test:review-safety   # 研究正文与证据请求的竞态/丢稿
+npm run test:metric          # 数值元信息/时段/财政部曲线解析
+npm run test:portfolio       # 组合策略与回测装配
+npm run test:capital         # 账本、绩效、页面契约
+npm run test:policy          # 政策采集、解析与执行进度
 npm run test:instrument-focus # 当前标的身份/持久化/降级
 npm run test:instrument-related # 标的关联与今日要点
 npm run test:team-plan       # 研究小组分工简报与边界
-npm run test:metric          # 数值元信息/时段/财政部曲线解析
-npm run test:backtest-builder # 回测输入装配（取价/权重/跨币种拒绝）
+npm run test:review-safety   # 研究正文与证据请求的竞态/丢稿
 npm run test:product-copy    # 可见文案只查界面文本
-npm run test:regressions     # 19 组
-npm run test:quant           # 28
+npm run test:regressions     # 跨模块回归
+npm run test:ui-contracts    # 面板交互契约
 ```
 
 文档截图由 `npm run docs:images` 生成：无头 Chrome 渲染真实组件，数据是 fixture，说明见 [tools/demo](<tools/demo/README.md>)。
@@ -145,7 +140,6 @@ Windows 上 `test:offline` 与 `test:personal` 依赖 POSIX 脚本语义，会�
 | 组合策略设计 | [产品方案](<docs/portfolio-strategy-design.md>) |
 | 组合回测、核验、审批 | [工作流说明](<docs/portfolio-workflows.md>) |
 | K 线、分时与事件口径 | [K 线与事件](<docs/history-kline.md>) · [Agent 分时取数](<docs/agent-intraday.md>) |
-| 本轮产品复审与改动 | [产品复审 2026-11](<docs/product-review-2026-11.md>) |
 | 研究小组分工 | [分工与边界](<docs/multi-agent-orchestration.md>) |
 | 数值口径与数据缺口 | [数值元信息](<docs/data-metrics.md>) |
 | 政策与白皮书采集 | [政策采集](<docs/policy-collection.md>) |
