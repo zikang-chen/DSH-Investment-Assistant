@@ -122,7 +122,6 @@ check('empty targets still show three separate subject cards with check entry po
   assert.equal(requests.length, 3)
   assert.ok(requests.every(request => request.includes('follow_add') && request.includes('"autoCheck":false')))
   assert.match(text(tree), /非实时、非全量/)
-  assert.match(text(tree), /默认手动检查，未开启新的后台任务/)
 })
 
 check('explicit empty catalog has an accessible empty state rather than fabricated subjects', () => {
@@ -214,7 +213,7 @@ check('other follow kinds are ignored; multiple tracked subjects are never merge
   assert.ok(!text(tree).includes(other.name))
   assert.equal(elements(tree).filter(node => node.type === 'article').length, 3)
   assert.equal(elements(tree).filter(node => node.type === 'button' && text(node) === '检查披露').length, 2)
-  assert.match(text(tree), /有限观察池：601288/)
+  assert.match(text(tree), /观察池：601288/)
 })
 
 check('table regions are keyboard-focusable with captions, row/column headers and theme-token horizontal scrolling', () => {

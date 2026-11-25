@@ -4584,7 +4584,6 @@ function FollowView() {
       <div style={cardStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
           <strong>其他机构与申报</strong>
-          <span style={muted}>新鲜度按「最近披露」计算</span>
         </div>
         {!data?.targets.length && <div style={muted}>还没有追踪对象。在对话里说「跟踪 巴菲特 / Nancy Pelosi / 冯柳」，Agent 会用 follow_add 建档并拉取基线。</div>}
         {data?.targets.filter(target => target.kind !== 'cn-state').map((t) => {
@@ -4628,7 +4627,6 @@ function FollowView() {
       <div data-panel-anchor="jobs" style={cardStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
           <strong>待解读任务</strong>
-          <span style={muted}>手动检查或已开启的周期检查入队；同一披露不重复</span>
         </div>
         {!jobs.length && <div style={muted}>暂无新披露。对象加好后先在对话里 follow_fetch 建立基线。</div>}
         {jobs.map((j) => (

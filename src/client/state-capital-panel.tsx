@@ -89,7 +89,7 @@ export function stateCapitalCheckRequest(target: StateCapitalTargetView): string
 
 export function stateCapitalAddRequest(entity: StateCapitalCatalogEntry): string {
   const input = JSON.stringify({ kind: 'cn-state', stateEntityId: entity.id, name: entity.name, stateCodes: entity.recommendedCodes ?? [], autoCheck: false })
-  return `请添加国家资本公开披露对象「${entity.name}」（主体 ${entity.id}）：先 follow_list 防重复并说明披露延迟与有限覆盖，再 follow_add(${input})，随后 follow_fetch → follow_diff → follow_note 建立首次观察。stateCodes 只是有限观察池，不是我的私人持仓或全量账户；不要合并汇金本体、汇金资产和证金。默认手动检查，不开启新的后台任务。`
+  return `请添加国家资本公开披露对象「${entity.name}」（主体 ${entity.id}）：先 follow_list 防重复并说明披露延迟与有限覆盖，再 follow_add(${input})，随后 follow_fetch → follow_diff → follow_note 建立首次观察。stateCodes 只是有限观察池，不是我的私人持仓或全量账户；不要合并汇金本体、汇金资产和证金。`
 }
 
 export function stateCapitalConfigureRequest(target: StateCapitalTargetView): string {
@@ -196,7 +196,6 @@ export function StateCapitalPanel({ targets, catalog, onRequest }: StateCapitalP
     <style data-fia-state-capital-styles="panel">{stateCapitalPanelCss}</style>
     <header className="fia-state-capital__header"><h2>国家资本公开披露</h2><StatusBadge>有限公开记录</StatusBadge></header>
     <p className="fia-state-capital__intro">汇金本体、汇金资产和证金分别展示，不合并为一个账户；非实时、非全量。期末数量变化不等于期间买卖，未披露不等于清仓。</p>
-    <p className="fia-state-capital__muted" role="status">默认手动检查，未开启新的后台任务。操作会投递到对话。</p>
     {!cards.length ? <EmptyState title="暂无国家资本主体" description="尚未提供主体目录或追踪对象。可在对话中指定要观察的主体。" /> : null}
     {cards.map(({ entity, target }, index) => {
       const snapshot = target?.stateCapital?.latest
@@ -209,8 +208,8 @@ export function StateCapitalPanel({ targets, catalog, onRequest }: StateCapitalP
               : <Button onClick={() => onRequest(stateCapitalAddRequest(entity))}>添加并检查</Button>}
           </div>
         </div>
-        {target ? <p className="fia-state-capital__muted">{target.autoCheck === true ? '已有配置：自动检查已开启' : '手动检查'} · 上次检查 {formatStateCapitalDate(target.lastCheckedAt)}
-          {target.stateCodes?.length ? ` · 有限观察池：${target.stateCodes.join('、')}` : entity.id !== 'huijin' ? ' · 有限观察池未设置' : ''}</p> : null}
+        {target ? <p className="fia-state-capital__muted">{target.autoCheck === true ? '自动检查' : '手动检查'} · 上次检查 {formatStateCapitalDate(target.lastCheckedAt)}
+          {target.stateCodes?.length ? ` · 观察池：${target.stateCodes.join('、')}` : entity.id !== 'huijin' ? ' · 观察池未设置' : ''}</p> : null}
         {mismatched ? <p className="fia-state-capital__error" role="alert">快照主体与追踪主体不匹配，暂不展示；请检查对象配置。</p> : null}
         {snapshot && !mismatched ? <Snapshot disclosure={snapshot} /> : <p className="fia-state-capital__empty" role="status">尚无可用快照</p>}
         {!target && entity.recommendedCodes?.length ? <details className="fia-state-capital__details"><summary>建议的有限观察池</summary><p>{entity.recommendedCodes.join('、')} · 仅为公开披露样例范围，不是私人持仓或完整账户。</p></details> : null}
