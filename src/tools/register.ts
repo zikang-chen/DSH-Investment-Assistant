@@ -1276,7 +1276,7 @@ export function registerTools(ctx: Context, finance: FinanceDataService, store: 
       kind: { type: 'string', enum: ['a', 'hk', 'us', 'fund'], description: 'K线工作区市场类型（tab=quotes/kline 生效），默认按 type/code 推断' },
       open_analysis: { type: 'boolean', description: '同时打开该代码的 AI 解读视图，默认 false' },
       note: { type: 'string', description: '显示在面板顶部的一句话（≤120字），解释这次导航的意图，如「你的 510300 折溢价在这里」' },
-      anchor: { type: 'string', description: '页内锚点：home → overview|growth|journal|reviews|approvals；holdings → lookthrough（穿透体检）；follow → targets|jobs|briefs|shadow' },
+      anchor: { type: 'string', description: '页内锚点：home → overview|growth|journal|reviews|approvals；holdings → lookthrough（穿透体检）；follow → state-capital|targets|jobs|briefs|shadow' },
     },
     output: jsonOut,
     async execute(args) {

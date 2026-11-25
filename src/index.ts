@@ -431,7 +431,7 @@ if (config.investment?.enabled !== false) {
       '- Market data uses direct HTTP endpoints (Eastmoney / Tencent), not akshare. If a market tool fails, call probe_finance_sources first.',
       '- Holdings CRUD works without quotes; P&L enrichment needs a healthy quote provider.',
       '- 历史K线/财报/分红可用 sync_history 落地到本地库，再用 get_history 读取（含事件标记）。',
-      '- 对话中想引导用户看面板时调用 panel_navigate（tab 必填，可带 code 聚焦；tab=quotes 聚焦K线工作区（tab=kline 为兼容别名），kind 指定市场，open_analysis 可同时打开 AI 解读）。note 会作为一句话解释显示在面板顶部，anchor 页内滚动（home 可用 overview/growth/journal/reviews/approvals，holdings 用 lookthrough，follow 用 targets/jobs/briefs/shadow）——导航时带上它们，用户才知道你让他看什么。',
+      '- 对话中想引导用户看面板时调用 panel_navigate（tab 必填，可带 code 聚焦；tab=quotes 聚焦K线工作区（tab=kline 为兼容别名），kind 指定市场，open_analysis 可同时打开 AI 解读）。note 会作为一句话解释显示在面板顶部，anchor 页内滚动（home 可用 overview/growth/journal/reviews/approvals，holdings 用 lookthrough，follow 用 state-capital/targets/jobs/briefs/shadow）——导航时带上它们，用户才知道你让他看什么。',
       '- 调仓推演用 simulate_rebalance：trades（买卖列表）或 targets（目标权重%）二选一，返回前后权重/HHI/分币种敞口对比；纯模拟，不改持仓。',
       '- 面板焦点用 panel_state 读取（用户当前所在标签页与聚焦代码，best-effort）：回答「我该看哪 / 你刚才说的那个」或引用面板内容前先读它，对齐用户实际所看。',
       '- Use type:"fund" for funds (基金, 6-digit code) and type:"stock" for stocks (A股/港股/美股).',
@@ -519,14 +519,16 @@ if (config.investment?.enabled !== false) {
     name: 'dsh-finance:follow',
     order: 125,
     text: [
-      '## 追踪（机构13F / 政客申报 / A股名私募，Agent 驱动，全本地档案）',
+      '## 追踪（机构13F / 政客申报 / A股名私募 / 国家资本公开披露，Agent 驱动，全本地档案）',
       '- 默认档案已预置三个样本对象：Berkshire Hathaway（CIK 0001067983，13F）、Nancy Pelosi（国会申报）、冯柳（A股十大流通股东）。首次 follow_list 即可见；用户不要哪个就 follow_remove（删了不复活）。',
       '- 触发：用户说「跟踪/盯」某人或机构、问「他最近买了什么 / 巴菲特/段永平/木头姐持仓」、问「跟着国会议员买哪些股」时：先 follow_list 装载记忆（新鲜度徽标+待解读任务），再 follow_fetch 拉最新披露。',
       '- follow_add：名字先自己解析（EDGAR/成员接口有响应式候选），失败带候选让用户选，再带 cik/slug 重试；不记固定名人表。加之前向用户说明该源的延迟与覆盖边界（工具返回自带 caveat，直接转述）。',
       '- 解读节奏（一次只做 1 件事）：follow_fetch（新披露会自动入队 follow_fetch 式任务卡）→ follow_diff 引用具体数字与披露日期 → 有重叠或用户想复刻时 follow_vs_holdings → 最后 follow_note 落简报（3-6 条要点，引用数字/日期/边界，同步资料库）。',
       '- follow_replicate 是纯纸面复刻（不触达真实账户、不建仓、不构成建议）；收益只按已定价部分算并标注缺失。禁：给出任何标的的买卖建议、声称「跟单」、暗示申报交易=内幕。',
-      '- 面板追踪页（tab=follow）只读展示对象/任务卡/简报/复刻状态；任务卡 click 回投对话（kind=follow 回执），解读仍在会话里做。anchor：follow 页用 targets/jobs/briefs/shadow。',
-      '- 新披露由 6 小时一次的后台检查发现（按披露主键去重，不重复入队）；发现后走会话触发的解读，不自动刷屏。',
+      '- 面板追踪页（tab=follow）只读展示对象/任务卡/简报/复刻状态；任务卡 click 回投对话（kind=follow 回执），解读仍在会话里做。anchor：follow 页用 state-capital/targets/jobs/briefs/shadow。',
+      '- 国家队/国家资本监测先 follow_list 查看stateCapitalCatalog，再 follow_add(kind="cn-state",stateEntityId,name,stateCodes,autoCheck=false)。huijin空池仅查看官网机构股权（非全部证券）；huijin-asset/csf需明确最多5只A股股票。不能读个人持仓自动扩围，也不能把ETF份额/成交/机构占比认成汇金买卖。',
+      '- 国家资本使用 follow_fetch → follow_diff → follow_note；每条保留报告期、披露日、抓取日及官方/聚合等级。披露日未知不填今天；newObservation不等于新披露；缺榜/首次观察不等于清仓/建仓；同一期改版不等于交易；母子公司不可直接加总。聚合股东表不是已核正式公告，ETF具名持有人不在本版自动源覆盖内。',
+      '- 国家资本对象默认仅手动，不新增后台任务。用户明确要求后才能 follow_state_configure(autoCheck=true) 复用既有6小时检查；stateCodes修改保留旧证据且不作跨范围差分。国家资本不支持follow_replicate或伪完整组合重叠。其它既有对象仍按6小时检查新披露，解读由会话触发，不自动刷屏。',
     ].join('\n'),
   })
 

@@ -10,6 +10,8 @@ import {
   type FollowBrief, type FollowJob, type FollowKind, type FollowShadow, type FollowSnapshot, type FollowState, type FollowTarget, type ShadowPosition,
 } from './follow.js'
 import { resolveAliases } from './data/manager-aliases.js'
+import { resolveStateCapitalEntity } from './state-capital.js'
+import { normalizeStateCapitalCodes } from './data/state-capital-sources.js'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -32,7 +34,19 @@ export const DEFAULT_FOLLOW_TARGETS: Array<{ kind: FollowKind; name: string; cik
 ]
 
 /** 结构校验：拒绝把垃圾形状写进档案（明确报错，不静默接受）。 */
-export function normalizeTarget(input: { kind?: unknown; name?: unknown; cik?: unknown; slug?: unknown; ticker?: unknown; aliases?: unknown; note?: unknown }): Pick<FollowTarget, 'kind' | 'name'> & Partial<Pick<FollowTarget, 'cik' | 'slug' | 'ticker' | 'aliases' | 'note'>> {
+export interface FollowTargetInput {
+  kind?: unknown; name?: unknown; cik?: unknown; slug?: unknown; ticker?: unknown; aliases?: unknown; note?: unknown
+  stateEntityId?: unknown; stateCodes?: unknown; autoCheck?: unknown
+}
+
+export function normalizeStateCodes(input: unknown): string[] {
+  if (input === undefined) return []
+  if (!Array.isArray(input) || input.some(code => typeof code !== 'string')) throw new Error('stateCodes 仅接受显式的A股股票代码数组；不读取个人持仓')
+  if (!input.length) return []
+  return normalizeStateCapitalCodes(input as string[])
+}
+
+export function normalizeTarget(input: FollowTargetInput): Pick<FollowTarget, 'kind' | 'name'> & Partial<Pick<FollowTarget, 'cik' | 'slug' | 'ticker' | 'aliases' | 'note' | 'stateEntityId' | 'stateCodes' | 'autoCheck'>> {
   const kind = String(input.kind ?? '') as FollowKind
   if (!FOLLOW_KINDS.includes(kind)) throw new Error(`kind 需要 ${FOLLOW_KINDS.join(' | ')}`)
   const name = String(input.name ?? '').trim()
@@ -51,6 +65,16 @@ export function normalizeTarget(input: { kind?: unknown; name?: unknown; cik?: u
   } else if (kind === 'congress-ticker') {
     if (!/^[A-Z.]{1,10}$/.test(ticker)) throw new Error('congress-ticker 需要 ticker（如 NVDA）')
     out.ticker = ticker
+  } else if (kind === 'cn-state') {
+    const entity = resolveStateCapitalEntity(String(input.stateEntityId ?? name))
+    if (!entity) throw new Error('无法识别国家资本法定主体；先查看follow_list返回的stateCapitalCatalog，不能把所有国资统称为一个账户')
+    if (input.autoCheck !== undefined && typeof input.autoCheck !== 'boolean') throw new Error('autoCheck 必须是布尔值；默认false，仅手动检查')
+    out.name = entity.name
+    out.stateEntityId = entity.id
+    out.stateCodes = normalizeStateCodes(input.stateCodes)
+    if (entity.id !== 'huijin' && !out.stateCodes.length) throw new Error('该主体需要显式stateCodes观察池（最多5只股票），不读取个人持仓代替')
+    out.autoCheck = input.autoCheck === true
+    out.aliases = [...entity.aliases]
   } else {
     let aliases = Array.isArray(input.aliases) ? input.aliases.map((x) => String(x).trim()).filter(Boolean) : []
     if (!aliases.length) aliases = [name]
@@ -113,13 +137,14 @@ export class FollowStore {
     s.activityDates = [iso, ...s.activityDates.filter((d) => d !== iso)].slice(0, 400)
   }
 
-  async addTarget(input: { kind?: unknown; name?: unknown; cik?: unknown; slug?: unknown; ticker?: unknown; aliases?: unknown; note?: unknown }): Promise<FollowTarget> {
+  async addTarget(input: FollowTargetInput): Promise<FollowTarget> {
     const base = normalizeTarget(input)
     return this.change('target', undefined, (s) => {
       const dup = s.targets.find((t) =>
         t.kind === base.kind && (
           (base.cik && t.cik === base.cik) || (base.slug && t.slug === base.slug) ||
-          (base.ticker && t.ticker === base.ticker) || (base.kind === 'cn-holder' && t.name === base.name)
+          (base.ticker && t.ticker === base.ticker) || (base.kind === 'cn-holder' && t.name === base.name) ||
+          (base.kind === 'cn-state' && t.stateEntityId === base.stateEntityId)
         ))
       if (dup) throw new Error(`已存在同类追踪对象：${dup.name}`)
       const target: FollowTarget = {
@@ -131,6 +156,20 @@ export class FollowStore {
       s.targets = [target, ...s.targets]
       this.touchActivity(s)
       return target
+    })
+  }
+
+  /** Change only a state-capital observer's explicit public scope; keep old evidence for audit. */
+  async configureStateTarget(id: string, patch: { stateCodes?: unknown; autoCheck?: unknown }): Promise<FollowTarget> {
+    return this.change('target', id, state => {
+      const index = state.targets.findIndex(target => target.id === id)
+      const current = state.targets[index]
+      if (!current || current.kind !== 'cn-state') throw new Error('只能配置已登记的国家资本观察对象')
+      const base = normalizeTarget({ ...current, ...patch })
+      const next: FollowTarget = { ...current, ...base }
+      state.targets[index] = next
+      this.touchActivity(state)
+      return next
     })
   }
 

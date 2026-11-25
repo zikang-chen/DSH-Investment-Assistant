@@ -7,15 +7,18 @@
  * 不触达真实账户、不给买卖建议。
  */
 
-export type FollowKind = 'investor-13f' | 'congress' | 'congress-ticker' | 'cn-holder'
+import type { StateCapitalDisclosure } from './state-capital.js'
 
-export const FOLLOW_KINDS: FollowKind[] = ['investor-13f', 'congress', 'congress-ticker', 'cn-holder']
+export type FollowKind = 'investor-13f' | 'congress' | 'congress-ticker' | 'cn-holder' | 'cn-state'
+
+export const FOLLOW_KINDS: FollowKind[] = ['investor-13f', 'congress', 'congress-ticker', 'cn-holder', 'cn-state']
 
 export const KIND_LABEL: Record<FollowKind, string> = {
   'investor-13f': '机构持仓(13F)',
   congress: '政客申报',
   'congress-ticker': '个股政客申报',
   'cn-holder': 'A股名私募',
+  'cn-state': '国家资本公开披露',
 }
 
 /** 13F 单仓（information table 解析结果）。 */
@@ -51,6 +54,8 @@ export interface FollowSnapshotData {
   trades?: FollowTrade[]
   /** cn-holder 等结构化附加信息（命中的股东行）。 */
   meta?: Record<string, unknown>
+  /** 国家资本：独立的数量/单位/报告期证据，不套用美股13F市值模型。 */
+  stateCapital?: StateCapitalDisclosure
 }
 
 export interface FollowSnapshot {
@@ -76,6 +81,12 @@ export interface FollowTarget {
   ticker?: string
   /** cn-holder：别名匹配串。 */
   aliases?: string[]
+  /** cn-state：法定主体的稳定标识，不能把母子公司静默合并。 */
+  stateEntityId?: string
+  /** 显式A股观察池；空池仅适用于汇金官网机构股权页，不读取用户持仓。 */
+  stateCodes?: string[]
+  /** 国家资本新增对象默认仅手动检查；显式开启才复用既有6小时检查。 */
+  autoCheck?: boolean
   note?: string
   enabled: boolean
   createdAt: string
@@ -88,7 +99,7 @@ export interface FollowJob {
   /** 幂等键：`${targetId}:${group}:${filingKey}` —— 同一披露永不重复入队。 */
   id: string
   targetId: string
-  group: '13F' | '13DG' | 'congress' | 'cnholder'
+  group: '13F' | '13DG' | 'congress' | 'cnholder' | 'cn-state'
   filingKey: string
   title: string
   state: 'ready' | 'done' | 'cancelled'

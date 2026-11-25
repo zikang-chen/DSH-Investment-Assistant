@@ -24,6 +24,8 @@ import {
   resolveCongressMember, resolveEdgarCik,
 } from '../data/follow-sources.js'
 import { resolveAliases } from '../data/manager-aliases.js'
+import { diffStateCapital } from '../state-capital.js'
+import { fetchStateCapitalTarget, stateCapitalCatalog, stateCapitalHistory, stateCapitalTargetView, STATE_CAPITAL_CAVEATS } from '../follow-state-capital.js'
 
 const output = { schema: { type: 'json' as const }, render: (_: unknown, v: unknown) => [{ type: 'text' as const, text: JSON.stringify(v) }] }
 const asJson = (v: unknown): JsonValue => JSON.parse(JSON.stringify(v)) as JsonValue
@@ -31,6 +33,7 @@ const today = () => new Date().toISOString().slice(0, 10)
 
 /** 各源的诚实口径（工具返回里强制带上的边界）。 */
 const CAVEATS: Record<FollowTarget['kind'], string[]> = {
+  'cn-state': STATE_CAPITAL_CAVEATS,
   'investor-13f': [
     '13F 为季度披露、约 45 天延迟；仅含美股多头（现金/债券/非美持仓不可见）。',
     '按披露市值占比研究，不构成任何投资建议；纸面复刻不触达真实账户。',
@@ -91,20 +94,22 @@ export function summarizeDiff(prev: FollowSnapshot | undefined, next: FollowSnap
 export function buildFollowSnapshot(follow: FollowStore) {
   const s: FollowState = follow.get()
   const targets = s.targets.map((t) => {
-    const latest = latestSnapshot(s.snapshots, t.id)
-    const prev = latest ? previousSnapshot(s.snapshots, t.id, latest.filingKey) : undefined
+    const stateHistory = t.kind === 'cn-state' ? stateCapitalHistory(s, t.id) : undefined
+    const latest = stateHistory ? stateHistory.latest : latestSnapshot(s.snapshots, t.id)
+    const prev = stateHistory ? stateHistory.previous : latest ? previousSnapshot(s.snapshots, t.id, latest.filingKey) : undefined
     const shadow = s.shadows.find((x) => x.targetId === t.id && !x.stoppedAt)
     const briefs = s.briefs.filter((b) => b.targetId === t.id)
     return {
       id: t.id, kind: t.kind, kindLabel: KIND_LABEL[t.kind], name: t.name,
       cik: t.cik, slug: t.slug, ticker: t.ticker, aliases: t.aliases, note: t.note,
+      ...(t.kind === 'cn-state' ? { stateEntityId: t.stateEntityId, stateCodes: t.stateCodes ?? [], autoCheck: t.autoCheck === true, stateCapital: stateCapitalTargetView(s, t) } : {}),
       enabled: t.enabled, createdAt: t.createdAt, lastCheckedAt: t.lastCheckedAt,
       lastFilingAt: latest?.filedAt, period: latest?.period,
       stale: staleLevel(t.kind, latest?.filedAt),
       ageDays: latest?.filedAt ? daysSince(latest.filedAt) : null,
       latestKey: latest?.filingKey,
       baseline: !!latest && !prev,
-      diff: latest ? summarizeDiff(prev, latest) : null,
+      diff: t.kind === 'cn-state' ? null : latest ? summarizeDiff(prev, latest) : null,
       briefCount: briefs.length,
       lastBrief: briefs[0] ? { at: briefs[0].at, title: briefs[0].title } : undefined,
       shadow: shadow ? {
@@ -116,7 +121,7 @@ export function buildFollowSnapshot(follow: FollowStore) {
   })
   const jobRows = s.jobs.slice(0, 24).map((j) => ({ ...j, targetName: s.targets.find((t) => t.id === j.targetId)?.name ?? j.targetId }))
   const briefRows = s.briefs.slice(0, 12).map((b, i) => ({ id: `${b.targetId}:${b.at}:${i}`, ...b, targetName: s.targets.find((t) => t.id === b.targetId)?.name ?? b.targetId }))
-  return { targets, jobs: jobRows, briefs: briefRows, counts: { targets: s.targets.length, readyJobs: s.jobs.filter((j) => j.state === 'ready').length, snapshots: s.snapshots.length } }
+  return { targets, jobs: jobRows, briefs: briefRows, stateCapitalCatalog: stateCapitalCatalog(), counts: { targets: s.targets.length, readyJobs: s.jobs.filter((j) => j.state === 'ready').length, snapshots: s.snapshots.length } }
 }
 
 export type FollowSnapshotView = ReturnType<typeof buildFollowSnapshot>
@@ -133,7 +138,7 @@ export interface FollowDeps {
 export function registerFollowTools(
   ctx: Context,
   deps: FollowDeps,
-  opts: { tick?: boolean } = {},
+  opts: { tick?: boolean; stateCapitalRuntime?: Parameters<typeof fetchStateCapitalTarget>[3] } = {},
 ) {
   const { finance, portfolio, follow, bus, vault, growth } = deps
 
@@ -325,7 +330,12 @@ export function registerFollowTools(
     let state: FollowState
     try { await follow.load(); state = follow.get() } catch { return }
     for (const t of state.targets.filter((x) => x.enabled)) {
+      if (t.kind === 'cn-state' && t.autoCheck !== true) continue
       try {
+        if (t.kind === 'cn-state') {
+          await fetchStateCapitalTarget(follow, t, undefined, opts.stateCapitalRuntime)
+          continue
+        }
         if (t.kind === 'investor-13f') {
           const filings = await fetchEdgarFilings(t.cik!)
           const n13 = latestFilingGroup(filings, '13F')
@@ -381,7 +391,7 @@ export function registerFollowTools(
 
   ctx.tools.register(defineTool({
     name: 'follow_list',
-    description: '装载追踪记忆：所有追踪对象（机构13F/政客申报/A股名私募）+ 新鲜度徽标 + 待解读任务 + 最近简报 + 纸面复刻状态。用户聊到「跟踪谁/他最近买了什么/复刻」先调它；只读。',
+    description: '装载追踪记忆：机构13F/政客申报/A股名私募/国家资本公开披露、主体目录、有限覆盖快照、待解读与简报。国家资本区分报告期、披露日和抓取日，不提供实时买卖。先调它；只读。',
     parameters: { id: { type: 'string', description: '只看某个对象（可选）' } },
     output,
     async execute(args) {
@@ -401,12 +411,15 @@ export function registerFollowTools(
     name: 'follow_add',
     description: '注册追踪对象（本地档案，不出本机）。先 follow_list 防重复；名字解析不到时返回候选让你带上 cik/slug 重试。加之前向用户说明数据延迟与覆盖边界。',
     parameters: {
-      kind: { type: 'string', enum: ['investor-13f', 'congress', 'congress-ticker', 'cn-holder'], required: true, description: 'investor-13f 机构持仓 / congress 政客申报 / congress-ticker 按个股看政客交易 / cn-holder A股名私募（十大流通股东）' },
+      kind: { type: 'string', enum: ['investor-13f', 'congress', 'congress-ticker', 'cn-holder', 'cn-state'], required: true, description: 'investor-13f 机构持仓 / congress 政客申报 / congress-ticker 个股政客交易 / cn-holder A股名私募 / cn-state 国家资本具名公开披露' },
       name: { type: 'string', required: true, description: '对象名，如 Berkshire Hathaway / Nancy Pelosi / NVDA（ticker 类填代码到 ticker）/ 冯柳' },
       cik: { type: 'string', description: 'investor-13f：SEC CIK（省略则按 name 解析）' },
       slug: { type: 'string', description: 'congress：成员 slug（省略则按 name 解析）' },
       ticker: { type: 'string', description: 'congress-ticker：股票代码，如 NVDA' },
       aliases: { type: 'array', items: { type: 'string' }, description: 'cn-holder：户名匹配串（省略则用内置别名表）' },
+      stateEntityId: { type: 'string', enum: ['huijin', 'huijin-asset', 'csf'], description: 'cn-state法定主体：汇金本体/汇金资产/证金，不能合成一个账户' },
+      stateCodes: { type: 'array', items: { type: 'string' }, description: 'cn-state显式股票观察池，最多5只；不读个人持仓。仅huijin可留空以查看官网机构股权；不支持用股票股东表推断ETF持有人' },
+      autoCheck: { type: 'boolean', description: 'cn-state默认false，仅手动检查；用户明确要求后台检查时才传true，复用既有6小时周期，不新建任务' },
       note: { type: 'string', description: '为什么跟踪（研究动机，进档案）' },
     },
     output,
@@ -434,12 +447,34 @@ export function registerFollowTools(
         slug = cands[0]!.slug
       }
       const aliases = kind === 'cn-holder' ? resolveAliases(name, Array.isArray(args.aliases) ? args.aliases.map((x) => String(x)) : undefined) : undefined
-      const target = await follow.addTarget({ kind, name, cik, slug, ticker, aliases, note: args.note })
+      const target = await follow.addTarget({ kind, name, cik, slug, ticker, aliases, note: args.note,
+        stateEntityId: args.stateEntityId, stateCodes: args.stateCodes, autoCheck: args.autoCheck })
       return asJson({
         ok: true, target,
         caveats: CAVEATS[target.kind],
-        next: '立即 follow_fetch 建立基线快照，之后由 tick 定时发现新披露。',
+        next: target.kind === 'cn-state'
+          ? '用 follow_fetch 手动建立公开披露基线；默认未开启后台检查，可用 follow_state_configure 显式修改有限股票池。'
+          : '立即 follow_fetch 建立基线快照，之后由 tick 定时发现新披露。',
       })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'follow_state_configure',
+    description: '修改国家资本对象的显式股票观察池（最多5只）或后台检查开关，保留旧快照。空池仅汇金官网模式可用。默认手动；仅在用户明确要求后台检查时设置autoCheck=true，不新建任务、不读取个人持仓。',
+    parameters: {
+      id: { type: 'string', required: true },
+      stateCodes: { type: 'array', items: { type: 'string' }, description: '明确的A股股票代码数组，最多5只；不把ETF当股票股东表扫描' },
+      autoCheck: { type: 'boolean', description: 'true复用既有6小时检查；false仅手动，设置true前需用户明确授权' },
+    },
+    output,
+    async execute(args) {
+      await follow.load()
+      const target = await follow.configureStateTarget(String(args.id ?? ''), {
+        ...(args.stateCodes !== undefined ? { stateCodes: args.stateCodes } : {}),
+        ...(args.autoCheck !== undefined ? { autoCheck: args.autoCheck } : {}),
+      })
+      return asJson({ ok: true, target, caveats: STATE_CAPITAL_CAVEATS, note: '旧范围快照保留；范围变化后不作跨口径增减推断。' })
     },
   }))
 
@@ -457,12 +492,18 @@ export function registerFollowTools(
 
   ctx.tools.register(defineTool({
     name: 'follow_fetch',
-    description: '拉取某对象的最新披露并入库（网络）：13F→EDGAR 官方 XML；政客→免费申报接口（失败自动试备用源）；A股名私募→十大流通股东扫描。返回是否新披露 + 两期 diff 摘要 + 强制边界说明。用户要「看看他最近的动向」时调用。',
+    description: '拉取某对象的最新披露并入库（网络）：13F→EDGAR 官方 XML；政客→申报接口；A股名私募→十大流通股东；国家资本→汇金官网机构股权或显式股票池的具名股东披露（聚合来源另标，非实时）。返回是否新披露 + 两期 diff 摘要 + 强制边界说明。用户要「看看他最近的动向」时调用。',
     parameters: { id: { type: 'string', required: true } },
     output,
     async execute(args, exec) {
       await follow.load()
       const target = findTarget(follow.get(), String(args.id ?? ''))
+      if (target.kind === 'cn-state') {
+        const result = await fetchStateCapitalTarget(follow, target, exec.signal, opts.stateCapitalRuntime)
+        await growth?.markActivity()
+        return asJson({ ok: true, target: { id: target.id, name: target.name, kind: target.kind }, ...result,
+          mode: 'public-disclosure', autoCheck: target.autoCheck === true, note: '仅公开披露基线/期末变化，不是国家队实时买卖。' })
+      }
       let result: { newFiling: boolean; diff?: DiffSummary; filing?: { accession?: string; filedAt?: string; period?: string; form?: string }; newCount?: number }
       if (target.kind === 'investor-13f') result = await syncInvestorFull(target, exec.signal)
       else if (target.kind === 'congress' || target.kind === 'congress-ticker') result = await syncCongressFull(target, exec.signal)
@@ -494,6 +535,13 @@ export function registerFollowTools(
       await follow.load()
       const state = follow.get()
       const target = findTarget(state, String(args.id ?? ''))
+      if (target.kind === 'cn-state') {
+        const { latest, previous } = stateCapitalHistory(state, target.id, args.filingKey ? String(args.filingKey) : undefined)
+        if (!latest?.data.stateCapital) return asJson({ ok: false, error: '尚无国家资本公开披露快照，请先 follow_fetch' })
+        return asJson({ ok: true, target: { id: target.id, name: target.name }, filingKey: latest.filingKey, baseline: !previous,
+          before: previous?.data.stateCapital, next: latest.data.stateCapital,
+          diff: diffStateCapital(previous?.data.stateCapital, latest.data.stateCapital), caveats: STATE_CAPITAL_CAVEATS })
+      }
       const next = latestSnapshot(state.snapshots, target.id, args.filingKey ? String(args.filingKey) : undefined)
       if (!next) throw new Error('还没有快照：先 follow_fetch')
       const prev = previousSnapshot(state.snapshots, target.id, next.filingKey)
@@ -528,6 +576,7 @@ export function registerFollowTools(
       await follow.load()
       const state = follow.get()
       const target = findTarget(state, String(args.id ?? ''))
+      if (target.kind === 'cn-state') return asJson({ ok: false, error: '国家资本目前只做公开披露监测，不把有限具名名单当完整组合或读取个人持仓作伪重叠分析', caveats: STATE_CAPITAL_CAVEATS })
       const latest = latestSnapshot(state.snapshots, target.id)
       if (!latest) throw new Error('还没有快照：先 follow_fetch')
       const holdings = portfolio.get().holdings.map((h) => ({ code: h.code, name: h.name, type: h.type }))
@@ -555,6 +604,7 @@ export function registerFollowTools(
     async execute(args) {
       await follow.load()
       const target = findTarget(follow.get(), String(args.id ?? ''))
+      if (target.kind === 'cn-state') return asJson({ ok: false, error: '有限国家资本公开披露不是可复刻组合，禁止把它伪装成完整仓位或交易信号', caveats: STATE_CAPITAL_CAVEATS })
       if (args.stop === true) {
         const r = await follow.stopShadow(target.id)
         return asJson(r.stopped ? { ok: true, stopped: true, note: '纸面复刻已归档；历史记录留在档案里。' } : { ok: false, error: '没有进行中的复刻' })
@@ -599,8 +649,15 @@ export function registerFollowTools(
       const target = findTarget(follow.get(), String(args.id ?? ''))
       const points = (Array.isArray(args.points) ? args.points : []).map((x) => String(x)).filter(Boolean).slice(0, 8)
       if (!points.length) throw new Error('points 至少 1 条（要引用具体数据）')
-      const filingKey = args.filingKey ? String(args.filingKey) : latestSnapshot(follow.get().snapshots, target.id)?.filingKey
+      const snapshot = target.kind === 'cn-state'
+        ? stateCapitalHistory(follow.get(), target.id, args.filingKey ? String(args.filingKey) : undefined).latest
+        : latestSnapshot(follow.get().snapshots, target.id, args.filingKey ? String(args.filingKey) : undefined)
+      if (target.kind === 'cn-state' && !snapshot?.data.stateCapital) return asJson({ ok: false, error: '无对应的国家资本证据快照，不能把未取得披露的分析写成追踪简报' })
+      const filingKey = args.filingKey ? String(args.filingKey) : snapshot?.filingKey
+      const evidence = snapshot?.data.stateCapital
+      const evidenceBody = evidence ? `\n\n## 披露依据\n主体：${evidence.entityName}\n报告期：${evidence.asOf ?? '逐条/未知'}\n披露日：${evidence.disclosedAt ?? '未知'}\n抓取时间：${evidence.capturedAt}\n覆盖：${evidence.coverage}\n\n${evidence.sources.map(source => `- ${source.level === 'official' ? '官方来源' : '聚合披露，原文待核'}：${source.url}；SHA256 ${source.hash}`).join('\n')}\n\n${STATE_CAPITAL_CAVEATS.map(text => `- ${text}`).join('\n')}` : ''
       let vaultId: string | undefined
+      let vaultError: string | undefined
       if (vault && args.saveVault !== false) {
         try {
           const item = await vault.create({
@@ -610,20 +667,20 @@ export function registerFollowTools(
             kind: 'note',
             tags: ['追踪', target.name],
             summary: points[0],
-            body: points.map((p) => `- ${p}`).join('\n'),
+            body: points.map((p) => `- ${p}`).join('\n') + evidenceBody,
             origin: 'chat',
           })
           vaultId = item.id
           bus?.publish({ kind: 'research', action: 'save', id: item.id, title: item.title, origin: 'chat' })
-        } catch { /* 资料库失败不阻塞简报主体 */ }
+        } catch (error) { vaultError = error instanceof Error ? error.message : String(error) }
       }
       const brief = await follow.addBrief({ targetId: target.id, title: String(args.title), points, filingKey, vaultId })
       // 解读完成 → 该对象的待办任务收口
-      for (const j of follow.get().jobs.filter((x) => x.targetId === target.id && x.state === 'ready')) {
+      for (const j of follow.get().jobs.filter((x) => x.targetId === target.id && x.state === 'ready' && (target.kind !== 'cn-state' || x.filingKey === filingKey))) {
         await follow.setJobState(j.id, 'done')
       }
       await growth?.markActivity()
-      return asJson({ ok: true, brief, jobsDone: true, ...(vaultId ? { vaultId } : {}) })
+      return asJson({ ok: true, brief, jobsDone: true, vaultSaved: !!vaultId, ...(vaultId ? { vaultId } : {}), ...(vaultError ? { vaultError } : {}) })
     },
   }))
 }

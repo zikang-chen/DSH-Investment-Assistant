@@ -90,7 +90,8 @@
     "test:vault-index": "tsx scripts/test_vault_index.ts",
     "test:sina-futures": "tsx scripts/test_sina_futures.ts",
     "test:gold-proxy-ui": "tsx scripts/test_gold_proxy_ui.ts",
-    "test:research-evidence": "tsx scripts/test_research_evidence.ts"
+    "test:research-evidence": "tsx scripts/test_research_evidence.ts",
+    "test:state-capital": "tsx scripts/test_state_capital.ts && tsx scripts/test_state_capital_sources.ts && tsx scripts/test_state_capital_follow.ts && tsx scripts/test_state_capital_ui.ts"
   },
   "dsh": {
     "bundle": {

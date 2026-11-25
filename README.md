@@ -46,6 +46,7 @@ npm run demo:seed      # data-demo/：示例账户、5 笔流水、2 条建议�
 - 基金净值、经理、规模、重仓、同类排名，多基金阶段收益与相关性对比；场内 ETF 另有成交价走势
 - Agent 可直接取分钟数据：`get_intraday_data`（A/H/美/全球 secid，1 或 5 日，带来源与时区分页）
 - 政策原文采集与入库：段落级引用、版本对比、传导链、执行进度跟踪
+- 国家资本公开披露追踪：汇金本体、汇金资产、证金分开；官网机构股权与最多5只明确股票的具名股东记录，三时点、来源和期末数量差分；默认手动，非实时、非全量
 - 宏观数据：统计局、人民银行、财政部，以及 OECD / Eurostat / ECB 等海外序列
 - 投资判断：条件性结论、支持证据、反对证据、失效条件、下次复核日
 - 个人资本：账户、交易流水、FIFO 已实现、未实现、TWR、XIRR、多币种净资产；流水可在页面直接查询
@@ -126,6 +127,7 @@ npm run test:instrument-related # 标的关联与今日要点
 npm run test:team-plan       # 研究小组分工简报与边界
 npm run test:review-safety   # 研究正文与证据请求的竞态/丢稿
 npm run test:product-copy    # 可见文案只查界面文本
+npm run test:state-capital   # 国家资本主体、来源、差分、工具与面板契约
 npm run test:vault-index     # 外部索引改写、损坏、删除与有界重试
 npm run test:research-evidence # 日期/原文/摘要/缺失正文的Agent读取契约
 npm run test:sina-futures    # 黄金CFD：身份、解析、取消与显式选择
@@ -147,6 +149,7 @@ Windows 上 `test:offline` 与 `test:personal` 依赖 POSIX 脚本语义，会�
 | 组合回测、核验、审批 | [工作流说明](<docs/portfolio-workflows.md>) |
 | K 线、分时与事件口径 | [K 线与事件](<docs/history-kline.md>) · [Agent 分时取数](<docs/agent-intraday.md>) |
 | 研究小组分工 | [分工与边界](<docs/multi-agent-orchestration.md>) |
+| 国家资本公开披露监测 | [来源、范围与Agent调用](<docs/state-capital-monitor.md>) |
 | 数值口径与数据缺口 | [数值元信息](<docs/data-metrics.md>) |
 | 政策与白皮书采集 | [政策采集](<docs/policy-collection.md>) |
 | 数据源与实测状态 | [数据源审计](<docs/data-source-audit.md>) · [中国免费数据集](<docs/free-cn-datasets.md>) |

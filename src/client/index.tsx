@@ -17,6 +17,7 @@ import { InstrumentRelated } from './instrument-related.js'
 import { TodayBrief, holdingMoves } from './today-brief.js'
 import { buildTeamPlan, renderTeamPrompt } from '../team/team-plan.js'
 import { MarketChart } from './market-chart.js'
+import { StateCapitalPanel, type StateCapitalTargetView, type StateCapitalCatalogEntry } from './state-capital-panel.js'
 import { SourcesWorkspace } from './sources-workspace.js'
 import { CapitalWorkspace, WealthWorkspace } from './capital-workspace.js'
 import { HoldingEntry } from './holding-entry.js'
@@ -4488,7 +4489,7 @@ function PanelBody(props: {
 // ---- 追踪页（tab=follow）：只读档案 + 待解读任务投递（解读回会话，遵循一次一条纪律） ----
 type FollowStale = 'none' | 'fresh' | 'normal' | 'stale'
 interface FollowDiffRow { dir: string; issuer: string; ticker?: string; delta: number | null }
-interface FollowTargetRow {
+interface FollowTargetRow extends StateCapitalTargetView {
   id: string; kind: string; kindLabel: string; name: string; ticker?: string; note?: string; enabled: boolean
   lastCheckedAt?: string; lastFilingAt?: string; period?: string; stale: FollowStale; ageDays: number | null
   baseline?: boolean
@@ -4501,6 +4502,7 @@ interface FollowJobRow { id: string; targetId: string; targetName: string; group
 interface FollowBriefRow { id: string; targetId: string; targetName: string; title: string; points: string[]; filingKey?: string; vaultId?: string; at: string }
 interface FollowData {
   ok: boolean; error?: string; targets: FollowTargetRow[]; jobs: FollowJobRow[]; briefs: FollowBriefRow[]
+  stateCapitalCatalog?: StateCapitalCatalogEntry[]
   counts?: { targets: number; readyJobs: number; snapshots: number }
 }
 const FOLLOW_STALE: Record<string, { label: string; bg: string; fg: string }> = {
@@ -4518,8 +4520,11 @@ function FollowView() {
   const load = useCallback(async () => {
     try {
       const r = await apiGet<FollowData>('/follow')
+      if (r.ok === false || !Array.isArray(r.targets) || !Array.isArray(r.jobs) || !Array.isArray(r.briefs)) {
+        setErr(r.error || '追踪档案响应不完整，已保留上次可用记录'); return
+      }
       setData(r)
-      setErr(r.ok === false ? (r.error || '加载失败') : '')
+      setErr('')
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
@@ -4573,13 +4578,16 @@ function FollowView() {
       </div>
       {err ? <div style={{ ...cardStyle, color: '#dc2626' }}>加载失败：{err}</div> : null}
 
-      <div data-panel-anchor="targets" style={cardStyle}>
+      <div data-panel-anchor="targets">
+        <StateCapitalPanel targets={data?.targets ?? []} catalog={data?.stateCapitalCatalog} onRequest={deliver} />
+      </div>
+      <div style={cardStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-          <strong>追踪对象</strong>
+          <strong>其他机构与申报</strong>
           <span style={muted}>新鲜度按「最近披露」计算</span>
         </div>
         {!data?.targets.length && <div style={muted}>还没有追踪对象。在对话里说「跟踪 巴菲特 / Nancy Pelosi / 冯柳」，Agent 会用 follow_add 建档并拉取基线。</div>}
-        {data?.targets.map((t) => {
+        {data?.targets.filter(target => target.kind !== 'cn-state').map((t) => {
           const st = FOLLOW_STALE[t.stale] ?? FOLLOW_STALE.none
           const diffChips: string[] = []
           if (t.diff?.mode === '13f') diffChips.push(`新进 ${t.diff.added} · 清仓 ${t.diff.removed} · 加仓 ${t.diff.increased} · 减仓 ${t.diff.decreased}`)
@@ -4620,7 +4628,7 @@ function FollowView() {
       <div data-panel-anchor="jobs" style={cardStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
           <strong>待解读任务</strong>
-          <span style={muted}>由 6 小时一次的披露检查自动入队（按披露主键去重）</span>
+          <span style={muted}>手动检查或已开启的周期检查入队；同一披露不重复</span>
         </div>
         {!jobs.length && <div style={muted}>暂无新披露。对象加好后先在对话里 follow_fetch 建立基线。</div>}
         {jobs.map((j) => (
@@ -4628,7 +4636,7 @@ function FollowView() {
             <span style={{ ...chip, background: j.state === 'ready' ? 'rgba(217,119,6,.14)' : 'rgba(107,114,128,.10)', color: j.state === 'ready' ? '#d97706' : '#9ca3af' }}>
               {j.state === 'ready' ? '待解读' : j.state === 'done' ? '已完成' : '已取消'}
             </span>
-            <span style={{ ...chip }}>{j.group}</span>
+            <span style={{ ...chip }}>{j.group === 'cn-state' ? '国家资本' : j.group}</span>
             <span style={{ flex: 1, minWidth: 0, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={j.title}>{j.title}</span>
             <span style={{ ...muted, whiteSpace: 'nowrap' }}>{j.at.slice(5, 16).replace('T', ' ')}</span>
             {j.state === 'ready' ? (
